@@ -40,7 +40,7 @@ service_name="komari-agent"
 target_dir="/opt/komari"
 github_proxy=""
 install_version="" # New parameter for specifying version
- 
+
 
 # Detect OS
 os_type=$(uname -s)
@@ -139,7 +139,7 @@ echo ""
 # Function to uninstall the previous installation
 uninstall_previous() {
     log_step "Checking for previous installation..."
-    
+
     # Stop and disable service if it exists
     if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files | grep -q "${service_name}.service"; then
         log_info "Stopping and disabling existing systemd service..."
@@ -165,20 +165,20 @@ uninstall_previous() {
         # macOS launchd service - check both system and user locations
         system_plist="/Library/LaunchDaemons/com.komari.${service_name}.plist"
         user_plist="$HOME/Library/LaunchAgents/com.komari.${service_name}.plist"
-        
+
         if [ -f "$system_plist" ]; then
             log_info "Stopping and removing existing system launchd service..."
             launchctl bootout system "$system_plist" 2>/dev/null || true
             rm -f "$system_plist"
         fi
-        
+
         if [ -f "$user_plist" ]; then
             log_info "Stopping and removing existing user launchd service..."
             launchctl bootout gui/$(id -u) "$user_plist" 2>/dev/null || true
             rm -f "$user_plist"
         fi
     fi
-    
+
     # Remove old binary if it exists
     if [ -f "$komari_agent_path" ]; then
         log_info "Removing old binary..."
@@ -219,7 +219,7 @@ install_dependencies() {
             log_error "No supported package manager found (apt/yum/apk/brew)"
             exit 1
         fi
-        
+
         # Verify installation
         for cmd in $missing_deps; do
             if ! command -v $cmd >/dev/null 2>&1; then
@@ -233,11 +233,11 @@ install_dependencies() {
     fi
 }
 
- 
+
 # Install dependencies
 install_dependencies
 
- 
+
 
 # Architecture detection with platform-specific support
 arch=$(uname -m)
@@ -297,10 +297,10 @@ fi
 
 if [ -n "$github_proxy" ]; then
     # Use proxy for GitHub releases
-    download_url="${github_proxy}/https://github.com/komari-monitor/komari-agent/releases/${download_path}/${file_name}"
+    download_url="${github_proxy}/https://github.com/fearless743/komari-agent/releases/${download_path}/${file_name}"
 else
     # Direct access to GitHub releases
-    download_url="https://github.com/komari-monitor/komari-agent/releases/${download_path}/${file_name}"
+    download_url="https://github.com/fearless743/komari-agent/releases/${download_path}/${file_name}"
 fi
 
 log_step "Creating installation directory: ${GREEN}$target_dir${NC}"
@@ -333,7 +333,7 @@ detect_init_system() {
         echo "nixos"
         return
     fi
-    
+
     # Alpine Linux MUST be checked first
     # Alpine always uses OpenRC, even in containers where PID 1 might be different
     if [ -f /etc/alpine-release ]; then
@@ -342,10 +342,10 @@ detect_init_system() {
             return
         fi
     fi
-    
+
     # Get PID 1 process for other detection
     local pid1_process=$(ps -p 1 -o comm= 2>/dev/null | tr -d ' ')
-    
+
     # If PID 1 is systemd, use systemd
     if [ "$pid1_process" = "systemd" ] || [ -d /run/systemd/system ]; then
         if command -v systemctl >/dev/null 2>&1; then
@@ -356,7 +356,7 @@ detect_init_system() {
             fi
         fi
     fi
-    
+
     # Check for Gentoo OpenRC (PID 1 is openrc-init)
     if [ "$pid1_process" = "openrc-init" ]; then
         if command -v rc-service >/dev/null 2>&1; then
@@ -364,7 +364,7 @@ detect_init_system() {
             return
         fi
     fi
-    
+
     # Check for other OpenRC systems (not Alpine, already handled)
     # Some systems use traditional init with OpenRC
     if [ "$pid1_process" = "init" ] && [ ! -f /etc/alpine-release ]; then
@@ -379,19 +379,19 @@ detect_init_system() {
             return
         fi
     fi
-    
+
     # Check for OpenWrt's procd
     if command -v uci >/dev/null 2>&1 && [ -f /etc/rc.common ]; then
         echo "procd"
         return
     fi
-    
+
     # Check for macOS launchd
     if [ "$os_name" = "darwin" ] && command -v launchctl >/dev/null 2>&1; then
         echo "launchd"
         return
     fi
-    
+
     # Fallback: if systemctl exists and appears functional, assume systemd
     if command -v systemctl >/dev/null 2>&1; then
         if systemctl list-units >/dev/null 2>&1; then
@@ -399,7 +399,7 @@ detect_init_system() {
             return
         fi
     fi
-    
+
     # Last resort: check for OpenRC without other indicators
     if command -v rc-service >/dev/null 2>&1 && [ -d /etc/init.d ]; then
         echo "openrc"
@@ -411,7 +411,7 @@ detect_init_system() {
         echo "upstart"
         return
     fi
-    
+
     echo "unknown"
 }
 
@@ -534,7 +534,7 @@ EOF
 elif [ "$init_system" = "launchd" ]; then
     # macOS launchd service configuration
     log_info "Using launchd for service management"
-    
+
     # Determine if this should be a system or user service based on installation directory
     if [[ "$target_dir" =~ ^/Users/.* ]] || [ "$EUID" -ne 0 ]; then
         # User-level service (LaunchAgent)
@@ -552,7 +552,7 @@ elif [ "$init_system" = "launchd" ]; then
         service_user="root"
         log_dir="/var/log"
     fi
-    
+
     # Create the launchd plist file
     cat > "$plist_file" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -565,12 +565,12 @@ elif [ "$init_system" = "launchd" ]; then
     <array>
         <string>${komari_agent_path}</string>
 EOF
-    
+
     # Add program arguments if provided
     if [ -n "$komari_args" ]; then
         echo "$komari_args" | xargs -n1 printf "        <string>%s</string>\n" >> "$plist_file"
     fi
-    
+
     cat >> "$plist_file" << EOF
     </array>
     <key>WorkingDirectory</key>
@@ -588,7 +588,7 @@ EOF
 </dict>
 </plist>
 EOF
-    
+
     # Load and start the service
     if [[ "$target_dir" =~ ^/Users/.* ]] || [ "$EUID" -ne 0 ]; then
         # User-level service
