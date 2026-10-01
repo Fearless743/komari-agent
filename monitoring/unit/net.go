@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/komari-monitor/komari-agent/monitoring/netstatic"
-	"github.com/komari-monitor/komari-agent/utils"
+	"github.com/fearless743/komari-agent/monitoring/netstatic"
+	"github.com/fearless743/komari-agent/utils"
 	"github.com/shirou/gopsutil/v4/net"
 )
 

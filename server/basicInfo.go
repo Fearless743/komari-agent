@@ -9,13 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/komari-monitor/komari-agent/dnsresolver"
-	monitoring "github.com/komari-monitor/komari-agent/monitoring/unit"
-	"github.com/komari-monitor/komari-agent/protocol/transport"
-	v2 "github.com/komari-monitor/komari-agent/protocol/v2"
-	"github.com/komari-monitor/komari-agent/update"
+	"github.com/fearless743/komari-agent/dnsresolver"
+	monitoring "github.com/fearless743/komari-agent/monitoring/unit"
+	"github.com/fearless743/komari-agent/protocol/transport"
+	v2 "github.com/fearless743/komari-agent/protocol/v2"
+	"github.com/fearless743/komari-agent/update"
 
-	pkg_flags "github.com/komari-monitor/komari-agent/cmd/flags"
+	pkg_flags "github.com/fearless743/komari-agent/cmd/flags"
 )
 
 var flags = pkg_flags.GlobalConfig
