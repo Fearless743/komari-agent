@@ -3,7 +3,6 @@ package flags_pkg
 type Config struct {
 	AutoDiscoveryKey     string  `json:"auto_discovery_key" env:"AGENT_AUTO_DISCOVERY_KEY"`           // 自动发现密钥
 	DisableAutoUpdate    bool    `json:"disable_auto_update" env:"AGENT_DISABLE_AUTO_UPDATE"`         // 禁用自动更新
-	DisableWebSsh        bool    `json:"disable_web_ssh" env:"AGENT_DISABLE_WEB_SSH"`                 // [deprecated] 远程控制已移除，保留字段以兼容旧配置
 	MemoryModeAvailable  bool    `json:"memory_mode_available" env:"AGENT_MEMORY_MODE_AVAILABLE"`     // [deprecated] 已弃用，请使用 MemoryIncludeCache
 	Token                string  `json:"token" env:"AGENT_TOKEN"`                                     // Token
 	Endpoint             string  `json:"endpoint" env:"AGENT_ENDPOINT"`                               // 面板地址
