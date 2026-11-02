@@ -12,12 +12,9 @@ const (
 	MethodAgentReport     = "agent.report"
 	MethodAgentBasicInfo  = "agent.basicInfo"
 	MethodAgentPingResult = "agent.pingResult"
-	MethodAgentTaskResult = "agent.taskResult"
-	MethodAgentExec       = "agent.exec"
 	MethodAgentPing       = "agent.ping"
 	MethodAgentMessage    = "agent.message"
 	MethodAgentEvent      = "agent.event"
-	MethodAgentTerminal   = "agent.terminal.request"
 	MethodAgentPull       = "agent.pull"
 )
 
