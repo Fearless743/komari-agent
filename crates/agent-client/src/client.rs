@@ -67,8 +67,8 @@ impl ClientOptions {
 /// Why [`AgentClient::run`] returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunOutcome {
-    /// All reconnect attempts failed. The caller decides whether to restart the
-    /// loop (Go's root command starts it again) or exit.
+    /// All reconnect attempts failed. The CLI maps this to a non-zero exit so
+    /// a service manager with `Restart=on-failure` starts the agent again.
     RetriesExhausted,
 }
 
@@ -107,7 +107,14 @@ impl AgentClient {
     }
 
     /// Run until the retry budget is exhausted.
+    ///
+    /// Basic information is uploaded **before** the first connection attempt,
+    /// exactly like Go's root command (`DoUploadBasicInfoWorks` is started
+    /// before `EstablishWebSocketConnection`). A periodic upload task then runs
+    /// independently, so a slow panel cannot block reports or heartbeats.
     pub async fn run(&self) -> RunOutcome {
+        upload_basic_info(self.uploader.clone(), self.provider.clone()).await;
+
         let data_interval = self.options.data_interval();
         let heartbeat_interval = nonzero(self.options.heartbeat_interval, HEARTBEAT_INTERVAL);
         let info_interval = nonzero(
@@ -115,40 +122,41 @@ impl AgentClient {
             Duration::from_secs(5 * 60),
         );
 
+        let info_task = tokio::spawn(periodic_basic_info(
+            self.uploader.clone(),
+            self.provider.clone(),
+            info_interval,
+        ));
+
         let mut data_tick =
             tokio::time::interval_at(tokio::time::Instant::now() + data_interval, data_interval);
         let mut heartbeat_tick = tokio::time::interval_at(
             tokio::time::Instant::now() + heartbeat_interval,
             heartbeat_interval,
         );
-        let mut info_tick =
-            tokio::time::interval_at(tokio::time::Instant::now() + info_interval, info_interval);
 
-        let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(4);
+        let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<u64>(4);
         let mut connection: Option<ActiveConnection> = None;
-        let mut uploaded_initial_info = false;
+        let mut generation = 0u64;
 
         loop {
             tokio::select! {
                 _ = data_tick.tick() => {
                     if connection.is_none() {
-                        match self.connect_with_retry(&disconnect_tx).await {
-                            Some(active) => {
-                                let first = !uploaded_initial_info;
-                                connection = Some(active);
-                                if first {
-                                    uploaded_initial_info = true;
-                                    self.upload_basic_info().await;
-                                }
-                            }
+                        generation = generation.wrapping_add(1);
+                        match self.connect_with_retry(&disconnect_tx, generation).await {
+                            Some(active) => connection = Some(active),
                             None => {
                                 error!("Max retries reached; stopping the v1 report loop");
+                                info_task.abort();
                                 return RunOutcome::RetriesExhausted;
                             }
                         }
                     }
 
-                    let sample = self.provider.collect_report();
+                    let Some(sample) = collect_report(self.provider.clone()).await else {
+                        continue;
+                    };
                     let payload = match report_json(&sample) {
                         Ok(payload) => payload,
                         Err(err) => {
@@ -175,12 +183,13 @@ impl AgentClient {
                         cleanup(&mut connection).await;
                     }
                 }
-                _ = info_tick.tick() => {
-                    self.upload_basic_info().await;
-                }
-                Some(()) = disconnect_rx.recv() => {
-                    info!("WebSocket disconnected");
-                    cleanup(&mut connection).await;
+                Some(received) = disconnect_rx.recv() => {
+                    if disconnect_is_current(connection.as_ref(), received) {
+                        info!("WebSocket disconnected");
+                        cleanup(&mut connection).await;
+                    } else {
+                        debug!(generation = received, "ignoring stale disconnect signal");
+                    }
                 }
             }
         }
@@ -188,7 +197,8 @@ impl AgentClient {
 
     async fn connect_with_retry(
         &self,
-        disconnect_tx: &mpsc::Sender<()>,
+        disconnect_tx: &mpsc::Sender<u64>,
+        generation: u64,
     ) -> Option<ActiveConnection> {
         if self.options.max_retries < 0 {
             return None;
@@ -205,32 +215,65 @@ impl AgentClient {
             match self.ws.connect(&self.ws_endpoint).await {
                 Ok(WsConnection { sender, receiver }) => {
                     info!("WebSocket connected (protocol v1)");
-                    let handle = spawn_reader(receiver, disconnect_tx.clone());
+                    let handle = spawn_reader(receiver, disconnect_tx.clone(), generation);
                     return Some(ActiveConnection {
                         sender,
                         reader: handle,
+                        generation,
                     });
                 }
                 Err(err) => {
                     warn!(%err, "Failed to connect to WebSocket");
                     retry += 1;
                     if retry > self.options.max_retries {
+                        // Go always sleeps after a failed attempt, including
+                        // the final one, before the outer root loop retries.
+                        self.clock.sleep(self.options.reconnect_interval).await;
                         return None;
                     }
                 }
             }
         }
     }
+}
 
-    async fn upload_basic_info(&self) {
-        let info = self.provider.collect_basic_info();
-        match self.uploader.upload(&info).await {
-            Ok(outcome) if outcome.reduced => {
-                info!("Basic info uploaded successfully (compatibility fields removed)");
-            }
-            Ok(_) => info!("Basic info uploaded successfully"),
-            Err(err) => warn!(%err, "Error uploading basic info"),
+async fn collect_report(provider: Arc<dyn ReportProvider>) -> Option<ReportSample> {
+    match tokio::task::spawn_blocking(move || provider.collect_report()).await {
+        Ok(sample) => Some(sample),
+        Err(err) => {
+            error!(%err, "report collection task failed");
+            None
         }
+    }
+}
+
+async fn upload_basic_info(uploader: Arc<BasicInfoUploader>, provider: Arc<dyn ReportProvider>) {
+    let info = match tokio::task::spawn_blocking(move || provider.collect_basic_info()).await {
+        Ok(info) => info,
+        Err(err) => {
+            warn!(%err, "basic info collection task failed");
+            return;
+        }
+    };
+
+    match uploader.upload(&info).await {
+        Ok(outcome) if outcome.reduced => {
+            info!("Basic info uploaded successfully (compatibility fields removed)");
+        }
+        Ok(_) => info!("Basic info uploaded successfully"),
+        Err(err) => warn!(%err, "Error uploading basic info"),
+    }
+}
+
+async fn periodic_basic_info(
+    uploader: Arc<BasicInfoUploader>,
+    provider: Arc<dyn ReportProvider>,
+    interval: Duration,
+) {
+    let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+    loop {
+        ticker.tick().await;
+        upload_basic_info(uploader.clone(), provider.clone()).await;
     }
 }
 
@@ -244,7 +287,8 @@ fn nonzero(value: Duration, fallback: Duration) -> Duration {
 
 fn spawn_reader(
     mut receiver: Box<dyn WsReceiver>,
-    disconnected: mpsc::Sender<()>,
+    disconnected: mpsc::Sender<u64>,
+    generation: u64,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(event) = receiver.next_event().await {
@@ -265,13 +309,18 @@ fn spawn_reader(
                 }
             }
         }
-        let _ = disconnected.send(()).await;
+        let _ = disconnected.send(generation).await;
     })
 }
 
 struct ActiveConnection {
     sender: Box<dyn WsSender>,
     reader: JoinHandle<()>,
+    generation: u64,
+}
+
+fn disconnect_is_current(connection: Option<&ActiveConnection>, generation: u64) -> bool {
+    connection.is_some_and(|active| active.generation == generation)
 }
 
 async fn cleanup(connection: &mut Option<ActiveConnection>) {
@@ -300,5 +349,31 @@ mod tests {
             Duration::from_secs(1)
         );
         assert_eq!(options(f64::NAN).data_interval(), Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn stale_disconnect_generations_are_ignored() {
+        let active = ActiveConnection {
+            sender: Box::new(NoopSender),
+            reader: tokio::spawn(async {}),
+            generation: 7,
+        };
+
+        assert!(disconnect_is_current(Some(&active), 7));
+        assert!(!disconnect_is_current(Some(&active), 6));
+        assert!(!disconnect_is_current(None, 7));
+    }
+
+    struct NoopSender;
+
+    #[async_trait::async_trait]
+    impl WsSender for NoopSender {
+        async fn send_text(&mut self, _payload: &str) -> Result<(), crate::ws::WsError> {
+            Ok(())
+        }
+        async fn send_ping(&mut self) -> Result<(), crate::ws::WsError> {
+            Ok(())
+        }
+        async fn close(&mut self) {}
     }
 }
