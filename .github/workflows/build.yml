@@ -22,6 +22,58 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install shellcheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+
+      - name: Lint shell scripts
+        run: |
+          bash -n install.sh build_all.sh scripts/test-install-service-render.sh
+          shellcheck -S style install.sh build_all.sh scripts/test-install-service-render.sh
+          bash scripts/test-install-service-render.sh
+
+      - name: Lint workflows
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          "$(go env GOPATH)/bin/actionlint" .github/workflows/*.yml
+
+      - name: Parse PowerShell installers
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in @('install.ps1', 'build_all.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              $errors | ForEach-Object {
+                Write-Host "$file line $($_.Extent.StartLineNumber): $($_.Message)"
+              }
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Non-root installer dry-run
+        run: |
+          set -euo pipefail
+          target="${RUNNER_TEMP}/komari-a07"
+          rm -rf "$target"
+          output=$(./install.sh --dry-run --install-dir "$target" \
+            --endpoint https://panel.example.com --token ci-secret)
+          if grep -q 'ci-secret' <<<"$output"; then
+            echo "token leaked into dry-run output" >&2
+            exit 1
+          fi
+          if [ -e "$target" ]; then
+            echo "dry-run created the install directory" >&2
+            exit 1
+          fi
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
