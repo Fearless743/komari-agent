@@ -13,7 +13,7 @@ use crate::platform;
 use crate::types::OsInfo;
 
 #[cfg(target_os = "linux")]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::Command;
 
@@ -122,10 +122,14 @@ fn detect_android(options: &MonitorOptions) -> Option<String> {
         return Some(format_android(&version, &model, &brand));
     }
 
-    if let Ok(content) = fs::read_to_string(options.root_path("system/build.prop"))
-        && let Some(name) = parse_android_build_prop(&content)
-    {
-        return Some(name);
+    let build_prop = options.root_path("system/build.prop");
+    if build_prop.exists() {
+        // Go's readAndroidBuildProp returns "Android" when the file exists but
+        // cannot be read or has no release version.
+        let name = fs::read_to_string(&build_prop)
+            .ok()
+            .and_then(|content| parse_android_build_prop(&content));
+        return Some(name.unwrap_or_else(|| "Android".to_owned()));
     }
 
     let android_dirs = ["system/app", "system/priv-app", "data/app", "sdcard"];
@@ -211,7 +215,9 @@ fn detect_proxmox(options: &MonitorOptions) -> Option<String> {
 #[cfg(target_os = "linux")]
 fn proxmox_version_output(options: &MonitorOptions) -> Option<String> {
     let output = if is_default_root(options) {
-        Command::new("pveversion").output().ok()?
+        let path = std::env::var_os("PATH");
+        let binary = find_in_path("pveversion", path.as_deref())?;
+        Command::new(binary).output().ok()?
     } else {
         let binary = options.root_path("usr/bin/pveversion");
         if !binary.is_file() {
@@ -226,9 +232,24 @@ fn proxmox_version_output(options: &MonitorOptions) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Resolve an executable through an injected `PATH` value.
+///
+/// Split out so the Proxmox PATH lookup can be tested without mutating the
+/// process environment.
+#[cfg(target_os = "linux")]
+fn find_in_path(name: &str, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    let path = path.filter(|path| !path.is_empty())?;
+    std::env::split_paths(path)
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
 /// Extract `pve-manager/<version>~...` from `pveversion` output.
+///
+/// Go overwrites the version for every matching line, so the last match wins.
 #[cfg(target_os = "linux")]
 fn parse_proxmox_version(output: &str) -> Option<String> {
+    let mut found = None;
     for line in output.lines() {
         let line = line.trim();
         let Some(rest) = line.strip_prefix("pve-manager/") else {
@@ -237,10 +258,10 @@ fn parse_proxmox_version(output: &str) -> Option<String> {
         let version = rest.split('/').next().unwrap_or(rest);
         let version = version.split('~').next().unwrap_or(version).trim();
         if !version.is_empty() {
-            return Some(version.to_owned());
+            found = Some(version.to_owned());
         }
     }
-    None
+    found
 }
 
 /// Synology DSM detection mirrors Go: `synoinfo.conf` in either location, then
@@ -325,10 +346,10 @@ fn read_os_release(options: &MonitorOptions) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn read_os_release_value(options: &MonitorOptions, key: &str) -> Option<String> {
-    OS_RELEASE_PATHS
-        .iter()
-        .filter_map(|relative| fs::read_to_string(options.root_path(relative)).ok())
-        .find_map(|content| parse_os_release_value(&content, key))
+    // Go's Proxmox codename lookup reads only /etc/os-release.
+    fs::read_to_string(options.root_path("etc/os-release"))
+        .ok()
+        .and_then(|content| parse_os_release_value(&content, key))
 }
 
 /// Extract a value from an `os-release` file.
@@ -492,6 +513,14 @@ mod tests {
         .unwrap();
         let options = crate::options::MonitorOptions::default().with_root(android.path());
         assert_eq!(super::os_name(&options), "Android 14 (Google Pixel 8)");
+
+        // Go returns bare "Android" when build.prop exists but has no version.
+        fs::write(
+            android.path().join("system/build.prop"),
+            "ro.product.model=Pixel 8\n",
+        )
+        .unwrap();
+        assert_eq!(super::os_name(&options), "Android");
     }
 
     #[cfg(target_os = "linux")]
@@ -546,6 +575,67 @@ mod tests {
         assert_eq!(
             parse_proxmox_version("pve-manager/8.2.4~rc1/abc\n").as_deref(),
             Some("8.2.4")
+        );
+        // Go overwrites the version for each match: the last line wins.
+        assert_eq!(
+            parse_proxmox_version("pve-manager/8.1.0/aaa\nother\npve-manager/8.2.4/bbb\n")
+                .as_deref(),
+            Some("8.2.4")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proxmox_codename_reads_only_etc_os_release() {
+        use std::fs;
+
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp root");
+        let options = crate::options::MonitorOptions::default().with_root(dir.path());
+
+        fs::create_dir_all(dir.path().join("usr/lib")).unwrap();
+        fs::write(
+            dir.path().join("usr/lib/os-release"),
+            "VERSION_CODENAME=bookworm\n",
+        )
+        .unwrap();
+        assert_eq!(
+            super::read_os_release_value(&options, "VERSION_CODENAME"),
+            None
+        );
+
+        fs::create_dir_all(dir.path().join("etc")).unwrap();
+        fs::write(
+            dir.path().join("etc/os-release"),
+            "VERSION_CODENAME=trixie\n",
+        )
+        .unwrap();
+        assert_eq!(
+            super::read_os_release_value(&options, "VERSION_CODENAME").as_deref(),
+            Some("trixie")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn finds_pveversion_through_injected_path() {
+        use std::ffi::OsStr;
+        use std::fs;
+
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("path dir");
+        let binary = dir.path().join("pveversion");
+        fs::write(&binary, "#!/bin/sh\n").unwrap();
+
+        let path = dir.path().as_os_str();
+        assert_eq!(super::find_in_path("pveversion", Some(path)), Some(binary));
+        assert_eq!(super::find_in_path("missing", Some(path)), None);
+        assert_eq!(super::find_in_path("pveversion", None), None);
+        assert_eq!(
+            super::find_in_path("pveversion", Some(OsStr::new(""))),
+            None
         );
     }
 
