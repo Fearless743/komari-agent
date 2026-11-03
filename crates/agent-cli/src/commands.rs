@@ -306,6 +306,69 @@ mod tests {
     }
 
     #[test]
+    fn list_disk_prefers_1_mountinfo_over_mounts() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("1")).unwrap();
+        std::fs::write(
+            directory.path().join("1/mountinfo"),
+            "36 25 8:1 / /from-mountinfo rw,relatime - ext4 /dev/sda1 rw\n",
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("mounts"),
+            "/dev/sdb1 /from-mounts xfs rw 0 0\n",
+        )
+        .unwrap();
+
+        let mut output = Vec::new();
+        list_disk(directory.path(), "", &mut output).unwrap();
+        let text = String::from_utf8(output).unwrap();
+
+        assert!(text.contains("/from-mountinfo\text4"), "{text}");
+        assert!(!text.contains("/from-mounts"), "{text}");
+    }
+
+    #[test]
+    fn list_disk_prefers_self_mountinfo_over_self_mounts() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("self")).unwrap();
+        std::fs::write(
+            directory.path().join("self/mountinfo"),
+            "36 25 8:1 / /self-mountinfo rw - ext4 /dev/sda1 rw\n",
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("self/mounts"),
+            "/dev/sdb1 /self-mounts xfs rw 0 0\n",
+        )
+        .unwrap();
+
+        let mut output = Vec::new();
+        list_disk(directory.path(), "", &mut output).unwrap();
+        let text = String::from_utf8(output).unwrap();
+
+        assert!(text.contains("/self-mountinfo\text4"), "{text}");
+        assert!(!text.contains("/self-mounts"), "{text}");
+    }
+
+    #[test]
+    fn list_disk_falls_back_to_self_mounts() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("self")).unwrap();
+        std::fs::write(
+            directory.path().join("self/mounts"),
+            "/dev/sdb1 /self-mounts xfs rw 0 0\n",
+        )
+        .unwrap();
+
+        let mut output = Vec::new();
+        list_disk(directory.path(), "", &mut output).unwrap();
+        let text = String::from_utf8(output).unwrap();
+
+        assert!(text.contains("/self-mounts\txfs"), "{text}");
+    }
+
+    #[test]
     fn default_proc_root_matches_go() {
         assert_eq!(proc_root(""), PathBuf::from("/proc"));
         assert_eq!(proc_root("/host/proc"), PathBuf::from("/host/proc"));
