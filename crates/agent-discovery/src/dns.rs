@@ -1274,4 +1274,17 @@ mod tests {
         assert!(!interface_flags_allow_ipv4(running));
         assert!(!interface_flags_allow_ipv4(up | loopback));
     }
+    #[test]
+    fn transaction_ids_are_randomized_not_fixed_or_sequential() {
+        let ids: Vec<u16> = (0..8).map(|_| next_id()).collect();
+
+        assert!(
+            ids.iter().any(|id| *id != ids[0]),
+            "all transaction IDs were identical: {ids:?}"
+        );
+        let sequential = ids
+            .windows(2)
+            .all(|pair| pair[1] == pair[0].wrapping_add(1));
+        assert!(!sequential, "transaction IDs look sequential: {ids:?}");
+    }
 }

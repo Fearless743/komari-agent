@@ -4,6 +4,7 @@
 //! required and no real resolver configuration is changed.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use agent_discovery::dns::{DnsError, DnsResolver, PreferIp, ResolverConfig};
@@ -85,10 +86,14 @@ fn custom_resolver(server: SocketAddr, prefer: PreferIp) -> DnsResolver {
     .unwrap()
 }
 
-async fn start_truncated_dns() -> SocketAddr {
+async fn start_truncated_dns_with_tcp<F>(tcp_answer: F) -> SocketAddr
+where
+    F: Fn(&[u8]) -> Vec<u8> + Send + Sync + 'static,
+{
     let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let address = udp.local_addr().unwrap();
     let tcp = TcpListener::bind(address).await.unwrap();
+    let tcp_answer = Arc::new(tcp_answer);
 
     tokio::spawn(async move {
         let mut buffer = vec![0u8; 2048];
@@ -118,10 +123,7 @@ async fn start_truncated_dns() -> SocketAddr {
                 continue;
             }
 
-            let answer = match question_type(&query) {
-                Some(1) => response(&query, 0x8180, &[(1, vec![203, 0, 113, 9])]),
-                _ => response(&query, 0x8180, &[]),
-            };
+            let answer = tcp_answer(&query);
             let _ = stream.write_u16(answer.len() as u16).await;
             let _ = stream.write_all(&answer).await;
             let _ = stream.flush().await;
@@ -129,6 +131,14 @@ async fn start_truncated_dns() -> SocketAddr {
     });
 
     address
+}
+
+async fn start_truncated_dns() -> SocketAddr {
+    start_truncated_dns_with_tcp(|query| match question_type(query) {
+        Some(1) => response(query, 0x8180, &[(1, vec![203, 0, 113, 9])]),
+        _ => response(query, 0x8180, &[]),
+    })
+    .await
 }
 
 #[tokio::test]
@@ -141,6 +151,22 @@ async fn retries_truncated_udp_response_over_tcp() {
         addresses,
         vec!["203.0.113.9".parse::<std::net::IpAddr>().unwrap()]
     );
+}
+
+#[tokio::test]
+async fn malformed_tcp_retry_response_is_reported_as_bad_response() {
+    let server = start_truncated_dns_with_tcp(|query| {
+        let mut answer = response(query, 0x8180, &[]);
+        // QDCOUNT = 0 violates the expected single-question contract.
+        answer[4] = 0;
+        answer[5] = 0;
+        answer
+    })
+    .await;
+    let resolver = custom_resolver(server, PreferIp::V4);
+
+    let error = resolver.resolve_host("example.com").await.unwrap_err();
+    assert!(matches!(error, DnsError::BadResponse(_)), "{error:?}");
 }
 
 #[tokio::test]
