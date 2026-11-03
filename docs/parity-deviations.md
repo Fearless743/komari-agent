@@ -302,12 +302,15 @@ systemd `Restart=on-failure` 不重启，因此改为 1。
 
 状态：已收敛，不再是 A05 的差异；保留编号用于历史对照。
 
-## D-023 `strict_proc` 下 uptime 读取失败不写入 message
+## D-023 uptime 读取失败不写入上报 message
 
-- **Go**：没有 `strict_proc` 概念；`monitoring.Uptime()` 失败时把错误追加到上报 `message`。
-- **Rust**：设置 `HOST_PROC` 后会启用 `MonitorOptions::strict_proc`。此时 uptime 读取失败
-  直接上报 `0`，不向 `message` 追加错误，也不回退到宿主机 `/proc`/sysinfo。
+- **Go**：`monitoring.GenerateReport` 在 `monitoring.Uptime()` 返回错误时把
+  `failed to get uptime: ...` 追加到 `message`。
+- **Rust**：A03 的 `collect_report_metrics()` 只把 network/connections/GPU 错误写入
+  `message`；uptime 读取失败会记录日志并按平台回退（`strict_proc` 下直接为 0），
+  不追加到 `message`。
 
-原因：注入的 proc root 被视为权威来源，避免容器内静默混入宿主机指标。
-影响：`HOST_PROC` 部署在 proc 挂载异常时看不到 `failed to get uptime` 诊断；未设置
-`HOST_PROC` 的正常路径仍按 Go 追加错误。
+原因：uptime 采集已收敛到 A03，A05 不再维护第二套 message 组装逻辑；A03 当前接口
+只返回 `u64`，没有携带 uptime 错误。
+影响：依赖 `message` 中 uptime 诊断的部署会少一行文本，其余上报字段不受影响；
+`HOST_PROC`（strict_proc）下 uptime 读取失败静默归零，不混入宿主机指标。
