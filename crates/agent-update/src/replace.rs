@@ -267,4 +267,24 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "temporary file left behind");
     }
+    #[cfg(windows)]
+    #[test]
+    fn windows_fallback_replaces_existing_running_style_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("komari-agent.exe");
+        fs::write(&target, b"old binary").unwrap();
+
+        replace_file_atomically(&target, b"new binary").unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"new binary");
+        let leftovers: Vec<_> = fs::read_dir(directory.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.contains(".old-") || name.contains(".new-")
+            })
+            .collect();
+        assert!(leftovers.is_empty(), "temporary or backup file left behind");
+    }
 }
