@@ -103,3 +103,26 @@ pub(crate) fn load() -> crate::types::LoadAverage {
 pub(crate) fn uptime() -> u64 {
     System::uptime().unwrap_or(0)
 }
+
+/// Best-effort OS name for non-Linux platforms.
+#[cfg(target_os = "linux")]
+pub(crate) fn os_name() -> String {
+    "Linux".to_owned()
+}
+
+/// Best-effort OS name for non-Linux platforms.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn os_name() -> String {
+    System::long_os_version()
+        .or_else(|| System::name().ok())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| std::env::consts::OS.to_owned())
+}
+
+/// Kernel release from `sysinfo`.
+pub(crate) fn kernel_version() -> String {
+    System::kernel_version()
+        .ok()
+        .filter(|version| !version.trim().is_empty())
+        .unwrap_or_else(|| "Unknown".to_owned())
+}

@@ -25,6 +25,7 @@ mod platform;
 mod procfs;
 mod types;
 mod uptime;
+mod virtualization;
 
 pub use error::MonitorError;
 pub use options::{DEFAULT_PROC_ROOT, HOST_PROC_ENV, MonitorOptions};
@@ -32,6 +33,7 @@ pub use procfs::{
     CpuTimes, CpuUsage, ProcMemInfo, ProcStat, parse_loadavg, parse_meminfo, parse_proc_stat,
     parse_uptime, read_loadavg, read_meminfo, read_proc_stat, read_uptime, usage_between,
 };
+pub use virtualization::detect_virtualization;
 pub use types::{
     BasicInfo, CpuInfo, LoadAverage, MemoryInfo, MemoryMode, OsInfo, SwapInfo, SystemSnapshot,
 };
