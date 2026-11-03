@@ -10,7 +10,7 @@
 //! Go's `net.FlagUp`; `if-addrs::is_oper_up` is only used on non-Unix platforms
 //! where it is an approximation (D-011).
 
-use globset::Glob;
+use agent_monitor::NicFilter;
 
 /// Options for IP address selection.
 #[derive(Clone, Debug, Default)]
@@ -52,32 +52,6 @@ fn select_addresses(
     (custom_ipv4.to_owned(), custom_ipv6.to_owned())
 }
 
-fn glob_matches(patterns: &str, value: &str) -> bool {
-    patterns
-        .split(',')
-        .map(str::trim)
-        .filter(|pattern| !pattern.is_empty())
-        .any(|pattern| Glob::new(pattern).is_ok_and(|glob| glob.compile_matcher().is_match(value)))
-}
-
-fn nic_selected(options: &IpOptions, name: &str) -> bool {
-    // Go always excludes loopback and virtual/container bridge prefixes.
-    const LOOPBACK: &[&str] = &[
-        "lo", "veth", "docker", "br", "cni", "podman", "flannel", "virbr", "vmbr", "tap", "fwbr",
-        "fwpr",
-    ];
-    if LOOPBACK.iter().any(|prefix| name.starts_with(prefix)) {
-        return false;
-    }
-
-    let include = options.include_nics.trim();
-    if !include.is_empty() {
-        return glob_matches(include, name);
-    }
-
-    !glob_matches(&options.exclude_nics, name)
-}
-
 #[cfg(unix)]
 fn nic_addresses(options: &IpOptions) -> (String, String) {
     use std::ffi::CStr;
@@ -90,6 +64,7 @@ fn nic_addresses(options: &IpOptions) -> (String, String) {
         return (String::new(), String::new());
     }
 
+    let filter = NicFilter::new(&options.include_nics, &options.exclude_nics);
     let mut ipv4 = String::new();
     let mut ipv6 = String::new();
     let mut current = head;
@@ -106,7 +81,7 @@ fn nic_addresses(options: &IpOptions) -> (String, String) {
             // concrete layout is valid.
             let family = unsafe { (*entry.ifa_addr).sa_family as i32 };
 
-            if nic_selected(options, &name)
+            if filter.should_include(&name)
                 && interface_flags_allow_ip(entry.ifa_flags as libc::c_uint)
             {
                 if family == libc::AF_INET {
@@ -138,12 +113,13 @@ fn nic_addresses(options: &IpOptions) -> (String, String) {
 
 #[cfg(not(unix))]
 fn nic_addresses(options: &IpOptions) -> (String, String) {
+    let filter = NicFilter::new(&options.include_nics, &options.exclude_nics);
     let mut ipv4 = String::new();
     let mut ipv6 = String::new();
 
     if let Ok(interfaces) = if_addrs::get_if_addrs() {
         for interface in interfaces {
-            if !nic_selected(options, &interface.name) || !interface.is_oper_up() {
+            if !filter.should_include(&interface.name) || !interface.is_oper_up() {
                 continue;
             }
             match interface.ip() {
@@ -179,30 +155,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn loopback_and_container_interfaces_are_excluded() {
-        let options = IpOptions::default();
+    fn nic_filter_uses_a03_semantics() {
+        let filter = NicFilter::new("", "");
         for name in ["lo", "veth123", "docker0", "br-abc", "cni0", "tap0"] {
-            assert!(!nic_selected(&options, name), "{name}");
+            assert!(!filter.should_include(name), "{name}");
         }
-        assert!(nic_selected(&options, "eth0"));
-        assert!(nic_selected(&options, "enp1s0"));
+        assert!(filter.should_include("eth0"));
+        assert!(filter.should_include("enp1s0"));
+
+        let filter = NicFilter::new("eth*", "");
+        assert!(filter.should_include("eth0"));
+        assert!(!filter.should_include("enp1s0"));
+
+        let filter = NicFilter::new("", "enp*");
+        assert!(!filter.should_include("enp1s0"));
+        assert!(filter.should_include("eth0"));
     }
 
     #[test]
-    fn include_and_exclude_patterns_match_go_wildcards() {
-        let options = IpOptions {
-            include_nics: "eth*".to_owned(),
-            ..IpOptions::default()
-        };
-        assert!(nic_selected(&options, "eth0"));
-        assert!(!nic_selected(&options, "enp1s0"));
-
-        let options = IpOptions {
-            exclude_nics: "enp*".to_owned(),
-            ..IpOptions::default()
-        };
-        assert!(!nic_selected(&options, "enp1s0"));
-        assert!(nic_selected(&options, "eth0"));
+    fn whitespace_only_include_list_excludes_everything() {
+        // A03/Go treat " " as a non-empty include set with no usable patterns.
+        let filter = NicFilter::new(" ", "");
+        assert!(!filter.should_include("eth0"));
+        assert!(!filter.should_include("enp1s0"));
     }
 
     #[test]

@@ -13,7 +13,6 @@ agent-monitor = { path = "../agent-monitor" }
 agent-protocol = { path = "../agent-protocol" }
 async-trait.workspace = true
 futures-util.workspace = true
-globset.workspace = true
 if-addrs = "0.15"
 libc = "0.2"
 reqwest.workspace = true

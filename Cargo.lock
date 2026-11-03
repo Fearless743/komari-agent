@@ -38,7 +38,6 @@ dependencies = [
  "agent-protocol",
  "async-trait",
  "futures-util",
- "globset",
  "if-addrs",
  "libc",
  "reqwest",
