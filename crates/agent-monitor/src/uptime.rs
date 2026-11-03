@@ -2,6 +2,8 @@
 
 use crate::options::MonitorOptions;
 use crate::platform;
+
+#[cfg(target_os = "linux")]
 use crate::procfs::read_uptime;
 
 /// Collect uptime in whole seconds.

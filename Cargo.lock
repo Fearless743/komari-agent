@@ -69,6 +69,7 @@ dependencies = [
  "once_cell",
  "parking_lot 0.13.0",
  "serde",
+ "serde_json",
  "sysinfo",
  "tempfile",
  "thiserror",

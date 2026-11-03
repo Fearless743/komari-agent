@@ -2,8 +2,10 @@
 
 use crate::options::MonitorOptions;
 use crate::platform;
-use crate::procfs::read_loadavg;
 use crate::types::LoadAverage;
+
+#[cfg(target_os = "linux")]
+use crate::procfs::read_loadavg;
 
 /// Collect the 1/5/15 minute load averages.
 ///

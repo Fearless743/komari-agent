@@ -1,13 +1,18 @@
 //! CPU collection.
 
 use std::collections::HashSet;
+
+#[cfg(target_os = "linux")]
 use std::fs;
 
 use parking_lot::Mutex;
 
 use crate::options::MonitorOptions;
 use crate::platform;
-use crate::procfs::{ProcStat, read_proc_stat, usage_between};
+use crate::procfs::ProcStat;
+
+#[cfg(target_os = "linux")]
+use crate::procfs::{read_proc_stat, usage_between};
 use crate::types::CpuInfo;
 
 /// Collect CPU information.
@@ -130,4 +135,78 @@ pub(crate) fn parse_cpuinfo(content: &str) -> (Option<String>, u32) {
     let physical_cores = u32::try_from(physical_cores.len()).unwrap_or(u32::MAX);
 
     (name, physical_cores)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_cpuinfo;
+
+    #[test]
+    fn parses_x86_model_and_physical_cores() {
+        let content = "\
+processor\t: 0
+model name\t: Example CPU
+physical id\t: 0
+core id\t\t: 0
+
+processor\t: 1
+model name\t: Example CPU
+physical id\t: 0
+core id\t\t: 1
+
+processor\t: 2
+model name\t: Example CPU
+physical id\t: 1
+core id\t\t: 0
+
+processor\t: 3
+model name\t: Example CPU
+physical id\t: 1
+core id\t\t: 1
+
+";
+        let (name, physical) = parse_cpuinfo(content);
+        assert_eq!(name.as_deref(), Some("Example CPU"));
+        assert_eq!(physical, 4);
+    }
+
+    #[test]
+    fn arm_boards_report_unknown_physical_cores() {
+        let content = "\
+processor\t: 0
+model name\t: ARMv8 Processor rev 1 (v8l)
+BogoMIPS\t: 108.00
+Features\t: fp asimd
+
+processor\t: 1
+model name\t: ARMv8 Processor rev 1 (v8l)
+BogoMIPS\t: 108.00
+Features\t: fp asimd
+
+Hardware\t: Example Board
+";
+        let (name, physical) = parse_cpuinfo(content);
+        assert_eq!(name.as_deref(), Some("ARMv8 Processor rev 1 (v8l)"));
+        assert_eq!(physical, 0);
+    }
+
+    #[test]
+    fn prefers_model_name_and_ignores_empty_values() {
+        let content = "\
+Hardware\t: Example Board
+Processor\t: Example Processor
+Model\t\t: Example Model
+model name\t: \t
+";
+        let (name, physical) = parse_cpuinfo(content);
+        assert_eq!(name.as_deref(), Some("Example Board"));
+        assert_eq!(physical, 0);
+    }
+
+    #[test]
+    fn empty_input_yields_unknown() {
+        let (name, physical) = parse_cpuinfo("");
+        assert_eq!(name, None);
+        assert_eq!(physical, 0);
+    }
 }

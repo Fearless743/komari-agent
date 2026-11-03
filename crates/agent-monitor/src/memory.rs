@@ -11,8 +11,11 @@
 
 use crate::options::MonitorOptions;
 use crate::platform;
-use crate::procfs::{ProcMemInfo, read_meminfo};
+use crate::procfs::ProcMemInfo;
 use crate::types::{MemoryInfo, MemoryMode, SwapInfo};
+
+#[cfg(target_os = "linux")]
+use crate::procfs::read_meminfo;
 
 /// Select the accounting mode using Go's precedence:
 /// `include_cache` first, then `report_raw_used`, then the platform default.

@@ -140,3 +140,47 @@ fn unescape(value: &str) -> String {
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{map_arch, parse_os_release};
+
+    #[test]
+    fn parses_quoted_and_unquoted_pretty_name() {
+        let quoted = "NAME=\"Ubuntu\"\nPRETTY_NAME=\"Ubuntu 24.04.1 LTS\"\nVERSION_ID=\"24.04\"\n";
+        assert_eq!(
+            parse_os_release(quoted).as_deref(),
+            Some("Ubuntu 24.04.1 LTS")
+        );
+
+        let unquoted = "PRETTY_NAME=Debian GNU/Linux 12 (bookworm)\n";
+        assert_eq!(
+            parse_os_release(unquoted).as_deref(),
+            Some("Debian GNU/Linux 12 (bookworm)")
+        );
+
+        let escaped = r#"PRETTY_NAME="Example \"Edge\" OS"
+"#;
+        assert_eq!(
+            parse_os_release(escaped).as_deref(),
+            Some("Example \"Edge\" OS")
+        );
+    }
+
+    #[test]
+    fn os_release_without_pretty_name_returns_none() {
+        assert_eq!(parse_os_release("NAME=Alpine\nVERSION_ID=3.20\n"), None);
+        assert_eq!(parse_os_release("# PRETTY_NAME=Commented\n"), None);
+        assert_eq!(parse_os_release("PRETTY_NAME=\"\"\n"), None);
+        assert_eq!(parse_os_release(""), None);
+    }
+
+    #[test]
+    fn maps_rust_arch_to_goarch() {
+        assert_eq!(map_arch("x86_64"), "amd64");
+        assert_eq!(map_arch("aarch64"), "arm64");
+        assert_eq!(map_arch("x86"), "386");
+        assert_eq!(map_arch("loongarch64"), "loong64");
+        assert_eq!(map_arch("riscv64"), "riscv64");
+    }
+}

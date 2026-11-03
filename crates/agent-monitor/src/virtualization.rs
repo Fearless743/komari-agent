@@ -4,8 +4,11 @@
 //! and cgroups, DMI, then the CPU `hypervisor` flag. Bare metal returns
 //! `none`; when no probe can run, an empty string is returned.
 
+#[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::path::Path;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use std::process::Command;
 
 use crate::options::MonitorOptions;
@@ -32,7 +35,7 @@ pub fn detect_virtualization(options: &MonitorOptions) -> String {
         if options.proc_path("cpuinfo").is_file() {
             return "none".to_owned();
         }
-        return String::new();
+        String::new()
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -233,4 +236,74 @@ fn platform_detect(_options: &MonitorOptions) -> String {
 ))]
 fn platform_detect(_options: &MonitorOptions) -> String {
     String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{container_from_cgroup, virt_from_dmi_fields};
+
+    #[test]
+    fn classifies_container_cgroups() {
+        assert_eq!(
+            container_from_cgroup(
+                "12:devices:/docker/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
+            )
+            .as_deref(),
+            Some("docker")
+        );
+        assert_eq!(
+            container_from_cgroup("0::/machine.slice/libpod-abc123.scope\n").as_deref(),
+            Some("podman")
+        );
+        assert_eq!(
+            container_from_cgroup("0::/kubepods/burstable/pod1234/abc\n").as_deref(),
+            Some("kubernetes")
+        );
+        assert_eq!(
+            container_from_cgroup("0::/crio-0123456789abcdef.scope\n").as_deref(),
+            Some("container")
+        );
+        assert_eq!(
+            container_from_cgroup("0::/lxc/example\n").as_deref(),
+            Some("lxc")
+        );
+        assert_eq!(
+            container_from_cgroup("0::/user.slice/user-1000.slice/session-1.scope\n"),
+            None
+        );
+        assert_eq!(container_from_cgroup(""), None);
+    }
+
+    #[test]
+    fn maps_dmi_vendors_to_systemd_names() {
+        assert_eq!(
+            virt_from_dmi_fields(&["KVM", "QEMU", "Red Hat", "SeaBIOS"]).as_deref(),
+            Some("kvm")
+        );
+        assert_eq!(
+            virt_from_dmi_fields(&["VirtualBox", "innotek GmbH", "", ""]).as_deref(),
+            Some("oracle")
+        );
+        assert_eq!(
+            virt_from_dmi_fields(&["Virtual Machine", "Microsoft Corporation", "", ""]).as_deref(),
+            Some("microsoft")
+        );
+        assert_eq!(
+            virt_from_dmi_fields(&["VMware Virtual Platform", "VMware, Inc.", "", ""]).as_deref(),
+            Some("vmware")
+        );
+        assert_eq!(
+            virt_from_dmi_fields(&["Standard PC", "QEMU", "", ""]).as_deref(),
+            Some("qemu")
+        );
+        assert_eq!(
+            virt_from_dmi_fields(&["Some Virtual Appliance", "", "", ""]).as_deref(),
+            Some("virtualized")
+        );
+        assert_eq!(virt_from_dmi_fields(&["", "  ", "", ""]), None);
+        assert_eq!(
+            virt_from_dmi_fields(&["ThinkPad X1", "LENOVO", "", ""]),
+            None
+        );
+    }
 }
