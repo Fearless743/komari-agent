@@ -1,13 +1,22 @@
 //! Library support for the `komari-agent` binary.
 //!
-//! Holds the version constants (with compile-time overrides) and the tracing
-//! initialisation shared by the binary.
+//! Holds the version constants, tracing initialisation, the runtime assembly
+//! (`discovery`, WebSocket client, update loop) and the two diagnostic
+//! subcommands.
+
+pub mod commands;
+pub mod runtime;
 
 use std::io::IsTerminal;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tracing_subscriber::EnvFilter;
+
+pub use runtime::{
+    RunExit, RuntimeDeps, RuntimeError, client_options, monitor_options, resolve_config, run_with,
+    supplement_options,
+};
 
 /// Agent version.
 ///

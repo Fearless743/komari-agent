@@ -14,6 +14,7 @@ use serde::Deserialize;
 #[derive(Clone, Default, Deserialize, clap::Args)]
 pub struct CliOverrides {
     #[arg(
+        global = true,
         long = "auto-discovery",
         value_name = "KEY",
         help = "Auto discovery key for the agent"
@@ -21,6 +22,7 @@ pub struct CliOverrides {
     pub auto_discovery_key: Option<String>,
 
     #[arg(
+        global = true,
         long = "disable-auto-update",
         num_args = 0..=1, require_equals = true,
         default_missing_value = "true",
@@ -33,10 +35,17 @@ pub struct CliOverrides {
     #[arg(skip)]
     pub memory_mode_available: Option<bool>,
 
-    #[arg(long = "token", short = 't', value_name = "TOKEN", help = "API token")]
+    #[arg(
+        global = true,
+        long = "token",
+        short = 't',
+        value_name = "TOKEN",
+        help = "API token"
+    )]
     pub token: Option<String>,
 
     #[arg(
+        global = true,
         long = "endpoint",
         short = 'e',
         value_name = "ENDPOINT",
@@ -45,6 +54,7 @@ pub struct CliOverrides {
     pub endpoint: Option<String>,
 
     #[arg(
+        global = true,
         long = "interval",
         allow_negative_numbers = true,
         short = 'i',
@@ -54,6 +64,7 @@ pub struct CliOverrides {
     pub interval: Option<f64>,
 
     #[arg(
+        global = true,
         long = "ignore-unsafe-cert",
         short = 'u',
         num_args = 0..=1, require_equals = true,
@@ -64,6 +75,7 @@ pub struct CliOverrides {
     pub ignore_unsafe_cert: Option<bool>,
 
     #[arg(
+        global = true,
         long = "max-retries",
         allow_negative_numbers = true,
         short = 'r',
@@ -73,6 +85,7 @@ pub struct CliOverrides {
     pub max_retries: Option<i64>,
 
     #[arg(
+        global = true,
         long = "reconnect-interval",
         allow_negative_numbers = true,
         short = 'c',
@@ -82,6 +95,7 @@ pub struct CliOverrides {
     pub reconnect_interval: Option<i64>,
 
     #[arg(
+        global = true,
         long = "info-report-interval",
         allow_negative_numbers = true,
         value_name = "MINUTES",
@@ -90,6 +104,7 @@ pub struct CliOverrides {
     pub info_report_interval: Option<i64>,
 
     #[arg(
+        global = true,
         long = "include-nics",
         value_name = "NICS",
         help = "Comma-separated list of network interfaces to include"
@@ -97,6 +112,7 @@ pub struct CliOverrides {
     pub include_nics: Option<String>,
 
     #[arg(
+        global = true,
         long = "exclude-nics",
         value_name = "NICS",
         help = "Comma-separated list of network interfaces to exclude"
@@ -104,6 +120,7 @@ pub struct CliOverrides {
     pub exclude_nics: Option<String>,
 
     #[arg(
+        global = true,
         long = "include-mountpoint",
         value_name = "MOUNTPOINTS",
         help = "Semicolon-separated list of mount points to include for disk statistics"
@@ -111,6 +128,7 @@ pub struct CliOverrides {
     pub include_mountpoints: Option<String>,
 
     #[arg(
+        global = true,
         long = "month-rotate",
         allow_negative_numbers = true,
         value_name = "DAY",
@@ -119,6 +137,7 @@ pub struct CliOverrides {
     pub month_rotate: Option<i64>,
 
     #[arg(
+        global = true,
         long = "cf-access-client-id",
         value_name = "ID",
         help = "Cloudflare Access Client ID"
@@ -126,6 +145,7 @@ pub struct CliOverrides {
     pub cf_access_client_id: Option<String>,
 
     #[arg(
+        global = true,
         long = "cf-access-client-secret",
         value_name = "SECRET",
         help = "Cloudflare Access Client Secret"
@@ -133,6 +153,7 @@ pub struct CliOverrides {
     pub cf_access_client_secret: Option<String>,
 
     #[arg(
+        global = true,
         long = "memory-include-cache",
         num_args = 0..=1, require_equals = true,
         default_missing_value = "true",
@@ -142,6 +163,7 @@ pub struct CliOverrides {
     pub memory_include_cache: Option<bool>,
 
     #[arg(
+        global = true,
         long = "memory-exclude-bcf",
         num_args = 0..=1, require_equals = true,
         default_missing_value = "true",
@@ -151,6 +173,7 @@ pub struct CliOverrides {
     pub memory_report_raw_used: Option<bool>,
 
     #[arg(
+        global = true,
         long = "custom-dns",
         value_name = "SERVER",
         help = "Custom DNS server to use (e.g. 8.8.8.8, 114.114.114.114). By default, the program uses the system DNS resolver."
@@ -158,6 +181,7 @@ pub struct CliOverrides {
     pub custom_dns: Option<String>,
 
     #[arg(
+        global = true,
         long = "gpu",
         num_args = 0..=1, require_equals = true,
         default_missing_value = "true",
@@ -167,6 +191,7 @@ pub struct CliOverrides {
     pub enable_gpu: Option<bool>,
 
     #[arg(
+        global = true,
         long = "custom-ipv4",
         value_name = "ADDR",
         help = "Custom IPv4 address to use"
@@ -174,6 +199,7 @@ pub struct CliOverrides {
     pub custom_ipv4: Option<String>,
 
     #[arg(
+        global = true,
         long = "custom-ipv6",
         value_name = "ADDR",
         help = "Custom IPv6 address to use"
@@ -181,6 +207,7 @@ pub struct CliOverrides {
     pub custom_ipv6: Option<String>,
 
     #[arg(
+        global = true,
         long = "get-ip-addr-from-nic",
         num_args = 0..=1, require_equals = true,
         default_missing_value = "true",
@@ -194,6 +221,7 @@ pub struct CliOverrides {
     pub host_proc: Option<String>,
 
     #[arg(
+        global = true,
         long = "config",
         value_name = "FILE",
         help = "Path to the configuration file"
@@ -201,6 +229,7 @@ pub struct CliOverrides {
     pub config_file: Option<String>,
 
     #[arg(
+        global = true,
         long = "protocol-version",
         allow_negative_numbers = true,
         value_name = "VERSION",
@@ -209,6 +238,7 @@ pub struct CliOverrides {
     pub protocol_version: Option<i64>,
 
     #[arg(
+        global = true,
         long = "disable-compression",
         num_args = 0..=1, require_equals = true,
         default_missing_value = "true",
@@ -218,6 +248,7 @@ pub struct CliOverrides {
     pub disable_compression: Option<bool>,
 
     #[arg(
+        global = true,
         long = "prefer-ip-version",
         value_name = "VERSION",
         help = "Prefer IP version for dashboard connections: 4 or 6"
