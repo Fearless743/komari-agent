@@ -236,6 +236,12 @@ fn basic_info_v1_preserves_unknown_fields() {
 
 #[test]
 fn basic_info_v1_can_drop_legacy_keys() {
+    // The constructed default mirrors Go's full upload: both legacy keys are
+    // present (with zero/empty values) until the panel rejects them.
+    let full_default = BasicInfoV1::default().to_json().unwrap();
+    assert!(full_default.contains(r#""cpu_physical_cores":0"#));
+    assert!(full_default.contains(r#""kernel_version":"""#));
+
     let mut info = decode_v1::<BasicInfoV1>(BASIC_INFO_GOLDEN).unwrap();
     // Go deletes these keys for panels <= 1.0.2 / <= 1.2.0.
     info.kernel_version = None;

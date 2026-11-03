@@ -20,7 +20,7 @@ use serde_json::Value;
 ///
 /// Unknown/third-party keys are preserved via [`BasicInfoV1::extra`], matching
 /// the Go map payload.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BasicInfoV1 {
     #[serde(default)]
     pub cpu_name: String,
@@ -62,6 +62,36 @@ pub struct BasicInfoV1 {
     /// Unknown fields are preserved, matching the Go map payload.
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl Default for BasicInfoV1 {
+    /// A "full" payload equivalent to the Go agent's first upload attempt.
+    ///
+    /// Go always includes `cpu_physical_cores` (possibly `0`) and
+    /// `kernel_version` (possibly `""`); those keys are only deleted when the
+    /// panel rejects the full payload. Use `None` explicitly to emulate that
+    /// fallback.
+    fn default() -> Self {
+        Self {
+            cpu_name: String::new(),
+            cpu_cores: 0,
+            cpu_physical_cores: Some(0),
+            arch: String::new(),
+            os: String::new(),
+            kernel_version: Some(String::new()),
+            ipv4: String::new(),
+            ipv6: String::new(),
+            mem_total: 0,
+            swap_total: 0,
+            disk_total: 0,
+            gpu_name: String::new(),
+            virtualization: String::new(),
+            version: String::new(),
+            uuid: None,
+            region: None,
+            extra: BTreeMap::new(),
+        }
+    }
 }
 
 impl BasicInfoV1 {

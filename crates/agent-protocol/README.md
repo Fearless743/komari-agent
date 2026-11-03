@@ -80,6 +80,10 @@ Go agent 在 `server.uploadBasicInfo` 中构造 `map[string]interface{}`；服�
 | `region` | `region` | `Option<String>` | 服务端追加（GeoIP） | agent 不发送 |
 | 其它未知键 | `extra` | `BTreeMap<String, Value>` | map 动态字段 | 保留并原样回写 |
 
+`BasicInfoV1::default()` 等价于 Go 的**首次完整上传**：`cpu_physical_cores` 为 `Some(0)`、
+`kernel_version` 为 `Some("")`，两个键都会出现在 JSON 中。只有模拟旧面板回退时才把它们设为
+`None`，此时序列化结果与 Go 的 `delete(data, ...)` 一致。
+
 ## v2 JSON-RPC
 
 常量与 Go `protocol/v2` 一致：
