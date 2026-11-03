@@ -44,20 +44,32 @@ Go 的 v1 上报是 `map[string]interface{}`（`monitoring.GenerateReport`），
 | `network.up` / `down` | `network.up` / `down` | `u64` | `uint64` | `int64` | 字节/秒 |
 | `network.totalUp` / `totalDown` | `network.total_up` / `total_down` | `u64` | `uint64` | `int64` | camelCase 键名 |
 | `connections.tcp` / `udp` | `connections.tcp` / `udp` | `i64` | `int` | `int` | |
-| `gpu` | `gpu` | `Option<GpuDetailReportV1>` | 仅 `--enable-gpu` 时发送 | `*GPUDetailReport`，`omitempty` | 见下 |
-| `gpu.count` | `gpu.count` | `i64` | `int` | `int` | |
-| `gpu.average_usage` | `gpu.average_usage` | `f64` | `float64` | `float64` | |
-| `gpu.detailed_info[]` | `gpu.detailed_info` | `Vec<GpuDeviceInfoV1>` | `[]map` | `[]GPUDeviceInfo` | |
+| `gpu` | `gpu` | `Option<GpuReportV1>` | 仅 `--enable-gpu` 时发送 | `*GPUDetailReport`，`omitempty` | 有两种形状，见下 |
+| `gpu.count` | `gpu.count` | `Option<i64>` | `int` | `int` | 仅详细模式 |
+| `gpu.average_usage` | `gpu.average_usage` | `Option<f64>` | `float64` | `float64` | 仅详细模式；保留显式 0 |
+| `gpu.detailed_info[]` | `gpu.detailed_info` | `Option<Vec<GpuDeviceInfoV1>>` | `[]map` | `[]GPUDeviceInfo` | 仅详细模式 |
+| `gpu.models[]` | `gpu.models` | `Option<Vec<String>>` | `[]string` | 无对应字段 | 详细探测失败、型号探测成功时的回退形状 |
 | `gpu.detailed_info[].name` | `.name` | `String` | `string` | `string` | |
-| `gpu.detailed_info[].memory_total` / `memory_used` | 同名 | `i64` | `uint64` | `int64` | 字节 |
+| `gpu.detailed_info[].memory_total` / `memory_used` | 同名 | `u64` | `uint64` | `int64` | 字节 |
 | `gpu.detailed_info[].utilization` | `.utilization` | `f64` | `float64` | `float64` | % |
-| `gpu.detailed_info[].temperature` | `.temperature` | `i64` | `uint64` | `int` | °C |
+| `gpu.detailed_info[].temperature` | `.temperature` | `u64` | `uint64` | `int` | °C |
 | `uptime` | `uptime` | `u64` | `uint64` | `int64` | 秒 |
 | `process` | `process` | `i64` | `int` | `int` | 进程数 |
 | `message` | `message` | `String` | `string`（无 omitempty） | `string`（无 omitempty） | 总是出现，空值为 `""` |
 | `method` | `method` | `Option<String>` | 不发送 | `string`，`omitempty` | 服务端填充 |
 | `updated_at` | `updated_at` | `Option<String>` | 不发送 | `time.Time`（RFC 3339） | 保持字符串原样，避免重新格式化 |
 | 其它未知键 | `extra` | `BTreeMap<String, Value>` | map 动态字段 | `encoding/json` 忽略未知键 | Rust 保留并原样回写 |
+
+GPU 的两种 Go 实际输出（均由 `monitoring.GenerateReport` 产生）：
+
+- 详细探测成功：
+  `{"gpu":{"count":2,"average_usage":37.5,"detailed_info":[{"name":...,"memory_total":...,"memory_used":...,"utilization":...,"temperature":...}]}}`
+- 详细探测失败但型号探测成功：
+  `{"gpu":{"models":["NVIDIA GeForce RTX 4090","NVIDIA GeForce RTX 3090"]}}`
+
+`GpuReportV1` 的四个分支字段都是 `Option`，序列化时只输出存在的字段，因此不会把
+`models` 回退形状错误地补成零值 `count/average_usage/detailed_info`，也能保留显式的
+`average_usage: 0`。
 
 `omitempty` 语义：
 
@@ -67,6 +79,10 @@ Go 的 v1 上报是 `map[string]interface{}`（`monitoring.GenerateReport`），
   即使为空也输出 `""`。
 - 缺失字段解码时一律取零值（`#[serde(default)]`），因为 Go 的 `encoding/json` 不会拒绝缺字段的
   report。
+- 任意字段为 `null` 时按零值处理（`Option` 字段则为 `None`），与 Go `encoding/json` 把 `null`
+  解到非指针字段时保持零值的行为一致。
+- 顶层以及 `cpu`/`ram`/`swap`/`load`/`disk`/`network`/`connections`/`gpu` 和
+  `gpu.detailed_info[]` 中的未知字段都会保留在各自的 `extra` 中，与 Go agent 的 map 透传一致。
 
 ## v1 `BasicInfoV1` 字段对照表
 
@@ -99,9 +115,12 @@ Go agent 在 `server.uploadBasicInfo` 中构造 `map[string]interface{}`；服�
 1. **不实现 v2**：见上文“有意不实现 v2”。这是用户确认的有意裁剪。
 2. **键顺序**：Go 的 v1 report 是 map，`encoding/json` 按字母序输出；Rust 结构体按声明顺序输出。
    JSON 语义等价，测试按 `serde_json::Value` 比较。
-3. **未知字段**：v1 模型保留未知字段（与 Go agent 的 map 透传一致）。
-4. **时间字段**：`updated_at` 用 `String` 原样保留 Go 的 RFC 3339 文本，不解析为时间类型，
+3. **未知字段**：v1 模型在顶层和各 section 中保留未知字段（与 Go agent 的 map 透传一致）。
+4. **`null`**：Go 接受任意字段为 `null` 并保持零值；Rust 通过 `null_default` 反序列化助手复刻。
+5. **时间字段**：`updated_at` 用 `String` 原样保留 Go 的 RFC 3339 文本，不解析为时间类型，
    避免时区/纳秒格式被改写。
+6. **整数值浮点的文本格式**：Go `encoding/json` 把 `float64(0)` 写成 `0`、`float64(1)` 写成 `1`；
+   `serde_json` 写成 `0.0`、`1.0`。JSON 数值语义相同，服务端解析结果一致，但逐字节比对会不同。
 
 ## 用法
 
@@ -118,7 +137,8 @@ assert!(body.contains(r#""usage":1.5"#));
 
 `cargo test -p agent-protocol` 覆盖：
 
-- 由 Go `encoding/json` 实际产出的 v1 report / basic info golden JSON 往返；
-- 未知字段透传、`omitempty` 省略、缺失字段默认值；
-- `int64` / `uint64` 大整数与浮点精度；
+- 由 Go `encoding/json` 实际产出的 v1 report / basic info / GPU 两种形状 golden JSON 往返；
+- 顶层与各 section 的未知字段透传、`omitempty` 省略、缺失字段默认值；
+- `null` 顶层 section、嵌套标量按零值处理；
+- `int64` / `uint64` 大整数（含 GPU 显存/温度的 `uint64::MAX`）与浮点精度；
 - 顶层字段的类型错误与非法 JSON。
