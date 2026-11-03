@@ -44,7 +44,7 @@ fail() {
 # systemd
 write_service systemd
 unit="$KOMARI_SERVICE_ROOT/etc/systemd/system/${SERVICE_NAME}.service"
-expected_wd=$(systemd_path_escape "$TARGET_DIR")
+expected_wd="${TARGET_DIR//%/%%}"
 grep -Fq "WorkingDirectory=$expected_wd" "$unit" ||
     fail "systemd WorkingDirectory is not the unquoted, %-escaped path"
 if grep -Fq 'WorkingDirectory="' "$unit"; then
@@ -125,7 +125,7 @@ eval "set -- $command_args"
 
 # NixOS is printed, not written.
 nix_output=$(write_service nixos)
-expected_nix_wd=$(nix_escape "$(systemd_path_escape "$TARGET_DIR")")
+expected_nix_wd=$(nix_escape "${TARGET_DIR//%/%%}")
 printf '%s\n' "$nix_output" | grep -Fq "WorkingDirectory = \"$expected_nix_wd\";" ||
     fail "NixOS WorkingDirectory escaping mismatch"
 printf '%s\n' "$nix_output" | grep -Fq 'UMask = "0077";' ||

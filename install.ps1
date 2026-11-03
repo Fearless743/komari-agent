@@ -231,12 +231,17 @@ function Assert-SafeInstallDir {
         Fail "Refusing to use a drive root as the install directory: $Path"
     }
 
+    $userParent = $null
+    if ($env:USERPROFILE) {
+        $userParent = Split-Path -Parent $env:USERPROFILE
+    }
     $protected = @(
         $env:SystemRoot,
         $env:ProgramFiles,
         ${env:ProgramFiles(x86)},
         $env:ProgramData,
-        $env:USERPROFILE
+        $env:USERPROFILE,
+        $userParent
     )
     foreach ($item in $protected) {
         if (-not $item) { continue }
