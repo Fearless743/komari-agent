@@ -4,9 +4,9 @@ Komari Agent 的 Rust 增量重写版本。目标是与 [`../komari-agent`](../k
 100% 功能对等；在完成对等验证之前，Go 版本保留作为回退实现。
 
 当前阶段已包含 **workspace 骨架、CLI、配置加载、日志与版本信息、基础系统采集、
-协议 v1 模型、DNS/自动发现、自动更新**。基础采集覆盖 CPU、内存、Swap、负载、OS、
-uptime 与虚拟化；磁盘/网络/GPU 与 WebSocket 传输仍在后续任务中。
-`agent-discovery` 与 `agent-update` 两个 crate 已实现并通过独立测试，尚未接入 CLI 主循环。
+协议 v1 模型、DNS/自动发现、自动更新，以及完整的 v1 WebSocket 运行链路**。
+周期上报采集 CPU、内存、Swap、负载、磁盘、网络、连接数、进程数、GPU、uptime；
+基础信息上传、`auto-discovery.json` 注册/复用和 6 小时自动更新均已接入 CLI 主循环。
 协议 v2 已按用户确认裁剪（后端无 `/api/clients/v2/rpc` 路由），详见
 [`crates/agent-protocol/README.md`](crates/agent-protocol/README.md)。
 
@@ -19,7 +19,7 @@ crates/
   agent-config/            # 配置结构、默认值、环境变量、JSON 文件与 CLI 覆盖
   agent-monitor/           # 基础系统采集（CPU/内存/负载/OS/uptime/虚拟化）
   agent-protocol/          # 上报协议 v1（仅 v1，v2 已按确认裁剪）
-  agent-client/            # HTTP / WebSocket 传输（后续任务）
+  agent-client/            # v1 WebSocket 上报、基础信息上传与重连循环
   agent-discovery/         # 自定义 DNS 解析与自动发现注册
   agent-update/            # GitHub Release 版本检查、下载校验与原子替换
 ```
@@ -62,7 +62,8 @@ cargo build --release
   未设置 `HOST_PROC` 时的本机回退与 `strict_proc` 行为见 crate README。
 - 周期上报使用 `Collector::collect_report_metrics()`（不探测 OS/虚拟化），
   基础信息使用 `collect_basic_info()`；`collect()` 仅用于诊断。
-- 磁盘、网络与 GPU 采集由 A03 负责，尚未实现。
+- 磁盘、网络、连接数、进程数与 GPU 由 `agent-client` 的 `supplement` 模块临时补齐，
+  行为对齐 Go `GenerateReport`；A03 将把这些采集迁入 `agent-monitor`，届时可直接替换。
 
 详见 [`crates/agent-monitor/README.md`](crates/agent-monitor/README.md)。
 
@@ -143,7 +144,7 @@ AGENT_TOKEN=your-token AGENT_ENDPOINT=https://panel.example.com ./komari-agent
   `protocol_version` 默认 `1`；显式传入 `2` 或更大值会被降级为 `1` 并打印 warning。
   该差异已登记为 D-004。
 - `--autoUpdate` 与 `--memory-mode-available` 已弃用，仍会被接受并打印警告后忽略。
-- `check-mem`、`list-disk` 子命令依赖采集实现，将在后续任务中补齐。
+- `check-mem`、`list-disk` 子命令已接入采集实现；`HOST_PROC` 同样作用于这两个命令。
 
 ## 自动发现与自动更新
 
@@ -159,3 +160,21 @@ AGENT_TOKEN=your-token AGENT_ENDPOINT=https://panel.example.com ./komari-agent
 
 详细的行为对照、测试矩阵与已知限制见
 [`docs/agent-discovery-update.md`](docs/agent-discovery-update.md)。
+
+## v1 运行链路
+
+`agent-client` 实现了 Go `server/websocket.go` 与 `server/basicInfo.go` 的 v1 路径：
+
+- 连接 `{endpoint}/api/clients/report?token=...`，自动完成 `http→ws` / `https→wss`、
+  IDN、尾斜杠、IPv6 与 `prefer_ip_version` 处理；
+- 每 `interval` 秒上报一帧，CPU 固定 1 秒采样窗口（`sample_cpu`），字段与
+  `ReportV1` 严格一致；30 秒心跳 Ping，读循环只 drain 服务端帧；
+- 断开后按 `max_retries`、`reconnect_interval` 重连，耗尽后返回并由 CLI 退出；
+- 首次连接成功后立即上传 `BasicInfoV1`，之后每 `info_report_interval` 分钟上传；
+  失败时按 Go 语义去掉 `kernel_version` / `cpu_physical_cores` 再试一次；
+- `auto_discovery_key` 存在时读取/写入 `auto-discovery.json`；自动更新通过
+  `agent-update::run_periodic` 运行，`Updated` 映射为退出码 42。
+
+WebSocket、时钟、HTTP 上传与指标源均为 trait，测试使用本地 mock server 或通道实现，
+不会访问真实面板。架构与测试说明见
+[`crates/agent-client/README.md`](crates/agent-client/README.md)。

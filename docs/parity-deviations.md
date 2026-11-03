@@ -161,3 +161,24 @@ workflow 只上传裸二进制 `komari-agent-{os}-{arch}[.exe]`，因此正常�
 解析成功；Go 会直接失败。需要严格对齐时设置 `ResolverConfig::system_fallback = false`。
 
 状态：任务要求的增强，不影响正常路径。
+
+## D-013 重试耗尽后 CLI 退出，而不是立刻开始下一轮
+
+- **Go**：`EstablishWebSocketConnection` 在 v1 下耗尽 `max_retries` 后返回，root 命令的
+  `for { server.UpdateBasicInfo(); server.EstablishWebSocketConnection() }` 立即再次进入连接循环。
+- **Rust**：`AgentClient::run` 返回 `RunOutcome::RetriesExhausted`，CLI 以退出码 0 结束
+  （服务管理器可重新拉起进程）。
+
+原因：任务要求 v1 下“返回/退出”，同时让启动失败可观测、可测试，避免无面板时测试进程永久挂起。
+影响：服务管理器没有 Restart 策略时，进程不会像 Go 那样在内部无限重连；需要长期驻留的部署
+应配置 `Restart=always`，或把 `max_retries` 设为较大的值。
+
+## D-014 磁盘/网络/GPU/连接/进程采集暂由 `agent-client` 提供
+
+- **Go**：全部由 `monitoring`（gopsutil + `lspci`/`nvidia-smi`/`rocm-smi`）采集。
+- **Rust（A05）**：`agent-monitor` 尚未包含 A03 的磁盘/网络/GPU/连接/进程采集，因此
+  `agent-client::supplement` 直接读取 Linux `/proc`、`/sys`，并调用 `lspci`/`nvidia-smi`。
+
+原因：A05 需要按 Go 形状上报完整 v1 payload，不能等待 A03 合并。
+影响：非 Linux 平台这些字段为零/缺失；GPU 详细探测只覆盖 NVIDIA；后续 A03 落地后应删除
+`supplement` 并由 `agent-monitor::Collector` 提供同名数据。
