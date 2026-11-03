@@ -15,17 +15,30 @@ use crate::procfs::ProcStat;
 use crate::procfs::{read_proc_stat, usage_between};
 use crate::types::CpuInfo;
 
-/// Collect CPU information.
-///
-/// On Linux the usage is computed from two `/proc/stat` samples. The latest
-/// sample is cached in `last`, so only the first call has to sleep; subsequent
-/// calls measure the interval since the previous call. The Go agent samples for
-/// one second on every call.
+/// Collect CPU information using the cached sample (non-blocking after the
+/// first call).
 pub(crate) fn collect(options: &MonitorOptions, last: &Mutex<Option<ProcStat>>) -> CpuInfo {
+    collect_with(options, last, None)
+}
+
+/// Force a fresh two-sample measurement over `window`, ignoring the cache.
+pub(crate) fn sample(
+    options: &MonitorOptions,
+    last: &Mutex<Option<ProcStat>>,
+    window: std::time::Duration,
+) -> CpuInfo {
+    collect_with(options, last, Some(window))
+}
+
+fn collect_with(
+    options: &MonitorOptions,
+    last: &Mutex<Option<ProcStat>>,
+    forced_window: Option<std::time::Duration>,
+) -> CpuInfo {
     #[cfg(target_os = "linux")]
     {
         let mut last = last.lock();
-        match sample_proc(options, &mut last) {
+        match sample_proc(options, &mut last, forced_window) {
             Ok(info) => return info,
             Err(error) => {
                 platform::warn_proc_failure(options, "stat", &error);
@@ -39,21 +52,29 @@ pub(crate) fn collect(options: &MonitorOptions, last: &Mutex<Option<ProcStat>>) 
     #[cfg(not(target_os = "linux"))]
     let _ = last;
 
-    platform::fallback::cpu_info(options.cpu_sample_interval)
+    platform::fallback::cpu_info(forced_window.unwrap_or(options.cpu_sample_interval))
 }
 
 #[cfg(target_os = "linux")]
 fn sample_proc(
     options: &MonitorOptions,
     last: &mut Option<ProcStat>,
+    forced_window: Option<std::time::Duration>,
 ) -> Result<CpuInfo, crate::MonitorError> {
-    let previous = match last.take() {
-        Some(previous) => previous,
-        None => {
+    let previous = match forced_window {
+        Some(window) => {
             let first = read_proc_stat(&options.proc_root)?;
-            std::thread::sleep(options.cpu_sample_interval);
+            std::thread::sleep(window);
             first
         }
+        None => match last.take() {
+            Some(previous) => previous,
+            None => {
+                let first = read_proc_stat(&options.proc_root)?;
+                std::thread::sleep(options.cpu_sample_interval);
+                first
+            }
+        },
     };
 
     let current = read_proc_stat(&options.proc_root)?;

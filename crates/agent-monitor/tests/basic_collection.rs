@@ -466,6 +466,20 @@ fn basic_info_matches_go_field_semantics() {
 }
 
 #[test]
+fn sample_cpu_uses_an_explicit_window() {
+    let fixture = Fixture::full();
+    let collector = fixture.collector();
+
+    let started = std::time::Instant::now();
+    let cpu = collector.sample_cpu(Duration::from_millis(30));
+    let elapsed = started.elapsed();
+
+    assert!(elapsed >= Duration::from_millis(30), "{elapsed:?}");
+    assert_eq!(cpu.usage, 0.0);
+    assert_eq!(cpu.cores, 2);
+}
+
+#[test]
 fn report_metrics_match_generate_report_wire_shape() {
     let fixture = Fixture::full();
     let report = fixture.collector().collect_report_metrics();

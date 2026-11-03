@@ -94,6 +94,15 @@ impl Collector {
         cpu::collect(&self.options, &self.last_cpu_stat)
     }
 
+    /// Force a fresh CPU measurement over exactly `window`.
+    ///
+    /// Use this when A05 needs a fixed reporting window (Go samples for one
+    /// second every call). [`Collector::collect_cpu`] instead measures the time
+    /// elapsed since the previous call and never blocks after the first sample.
+    pub fn sample_cpu(&self, window: std::time::Duration) -> CpuInfo {
+        cpu::sample(&self.options, &self.last_cpu_stat, window)
+    }
+
     pub fn collect_memory(&self) -> MemoryInfo {
         memory::collect(&self.options)
     }
