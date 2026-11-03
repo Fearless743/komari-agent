@@ -121,6 +121,8 @@ fn fake_nvidia_smi(fixture: &Fixture) -> PathBuf {
 #[test]
 fn include_mountpoints_sums_only_the_listed_paths() {
     let fixture = Fixture::new();
+    // Go calls disk.Partitions first even when an include list is configured.
+    fixture.write("mounts", "/dev/sda1 / ext4 rw 0 0\n");
     fs::create_dir_all(fixture.path().join("mnt/a")).unwrap();
     fs::create_dir_all(fixture.path().join("mnt/b")).unwrap();
     let a = fixture.path().join("mnt/a");
@@ -199,7 +201,7 @@ fn network_report_uses_selected_interfaces_and_skips_loopback() {
 }
 
 #[test]
-fn month_rotate_reports_traffic_since_reset_and_persists_it() {
+fn month_rotate_keeps_totals_in_memory_and_only_writes_on_flush_or_drop() {
     let fixture = Fixture::new();
     fixture.write("net/dev", &proc_net_dev(1000, 2000));
 
@@ -208,20 +210,58 @@ fn month_rotate_reports_traffic_since_reset_and_persists_it() {
     assert_eq!(first.total_down, 0);
     assert_eq!(first.total_up, 0);
 
-    fixture.write("net/dev", &proc_net_dev(1500, 2600));
-    let second = collector.collect_network();
-    assert_eq!(second.total_down, 500);
-    assert_eq!(second.total_up, 600);
-
     let database = fixture.path().join("net_static.json");
-    assert!(database.is_file(), "monthly database should be persisted");
+    for step in 1..=5u64 {
+        fixture.write(
+            "net/dev",
+            &proc_net_dev(1000 + step * 100, 2000 + step * 200),
+        );
+        let report = collector.collect_network();
+        assert_eq!(report.total_down, step * 100);
+        assert_eq!(report.total_up, step * 200);
+        assert!(
+            !database.exists(),
+            "default save_interval must batch writes (step {step})"
+        );
+    }
+
+    // Collector::drop flushes the cache and persists one aggregated record.
+    drop(collector);
+    assert!(database.is_file(), "drop should flush pending traffic");
+
     let store = NetStaticStore::load(&database);
     assert_eq!(store.totals_between(0, 0)["eth0"].rx, 500);
-    assert_eq!(store.totals_between(0, 0)["eth0"].tx, 600);
+    assert_eq!(store.totals_between(0, 0)["eth0"].tx, 1000);
+    assert_eq!(store.data().interfaces["eth0"].len(), 1);
+    // Loopback and docker* are filtered before recording, matching
+    // InterfaceList()/shouldInclude().
+    assert_eq!(store.data().interfaces.len(), 1);
+    assert!(!store.data().interfaces.contains_key("lo"));
+    assert!(!store.data().interfaces.contains_key("docker0"));
 
     let loaded: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&database).unwrap()).unwrap();
-    assert!(loaded["interfaces"]["eth0"].is_array());
+    assert_eq!(loaded["interfaces"]["eth0"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn whitespace_only_include_list_is_an_include_branch_returning_zero() {
+    let fixture = Fixture::new();
+    fixture.write("mounts", "/dev/sda1 / ext4 rw 0 0\n");
+
+    for value in [" ", ";", "; ;"] {
+        let disk =
+            Collector::new(fixture.base_options().with_filters(value, "", "", 0)).collect_disk();
+        assert_eq!(disk.total, 0, "value={value:?}");
+        assert_eq!(disk.used, 0, "value={value:?}");
+    }
+}
+
+#[test]
+fn include_list_requires_a_readable_mount_table_like_go() {
+    let fixture = Fixture::new();
+    let disk = Collector::new(fixture.base_options().with_filters("/", "", "", 0)).collect_disk();
+    assert_eq!(disk.total, 0);
 }
 
 #[test]
