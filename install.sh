@@ -746,9 +746,8 @@ build_exec_args() {
 }
 
 format_exec_start() {
-    local out="$1"
+    local out=""
     local arg
-    shift
     for arg in "$@"; do
         if [ -z "$arg" ] || [[ "$arg" == *[[:space:]]* ]] || [[ "$arg" == *\"* ]]; then
             arg="${arg//\"/\\\"}"
@@ -757,7 +756,7 @@ format_exec_start() {
             out="$out $arg"
         fi
     done
-    printf '%s' "$out"
+    printf '%s' "${out# }"
 }
 
 xml_escape() {
@@ -807,7 +806,7 @@ EOF
         openrc)
             local service_file="/etc/init.d/${SERVICE_NAME}"
             local args
-            args=$(format_exec_start "" "${EXEC_ARGS[@]}")
+            args=$(format_exec_start "${EXEC_ARGS[@]}")
             if [ "$DRY_RUN" = true ]; then
                 log_info "[dry-run] would write $service_file"
                 return 0
@@ -839,7 +838,7 @@ EOF
         procd)
             local service_file="/etc/init.d/${SERVICE_NAME}"
             local args
-            args=$(format_exec_start "" "${EXEC_ARGS[@]}")
+            args=$(format_exec_start "${EXEC_ARGS[@]}")
             if [ "$DRY_RUN" = true ]; then
                 log_info "[dry-run] would write $service_file"
                 return 0
@@ -979,7 +978,7 @@ EOF
             local service_file="/usr/local/etc/rc.d/${SERVICE_NAME}"
             local rc_name="${SERVICE_NAME//-/_}"
             local args
-            args=$(format_exec_start "" "${EXEC_ARGS[@]}")
+            args=$(format_exec_start "${EXEC_ARGS[@]}")
             if [ "$DRY_RUN" = true ]; then
                 log_info "[dry-run] would write $service_file"
                 return 0
