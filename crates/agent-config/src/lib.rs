@@ -143,12 +143,15 @@ impl Config {
             };
         }
 
-        // Go only enables booleans for "true" (case insensitive) and "1";
-        // any other non-empty value explicitly turns the option off.
+        // Go only enables booleans for "true" (case insensitive) and "1".
+        // Any other value is ignored, keeping the value from a lower priority
+        // source (config file or default).
         macro_rules! boolean {
             ($field:ident, $key:expr) => {
-                if let Some(value) = env($key).filter(|value| !value.is_empty()) {
-                    self.$field = value.eq_ignore_ascii_case("true") || value == "1";
+                if let Some(value) = env($key).filter(|value| !value.is_empty())
+                    && (value.eq_ignore_ascii_case("true") || value == "1")
+                {
+                    self.$field = true;
                 }
             };
         }
@@ -349,7 +352,7 @@ mod tests {
         None
     }
 
-    fn env_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+    fn env_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + use<> {
         let values: HashMap<String, String> = pairs
             .iter()
             .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))

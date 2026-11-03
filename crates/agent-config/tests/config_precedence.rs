@@ -20,7 +20,7 @@ fn write_config(contents: &str) -> tempfile::NamedTempFile {
     file
 }
 
-fn env_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+fn env_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + use<> {
     let values: std::collections::HashMap<String, String> = pairs
         .iter()
         .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
@@ -69,7 +69,7 @@ fn precedence_is_flags_then_env_then_file_then_defaults() {
 }
 
 #[test]
-fn boolean_environment_values_follow_go_semantics() {
+fn boolean_environment_values_only_enable_on_true_or_one() {
     let env = env_from(&[
         ("AGENT_MEMORY_INCLUDE_CACHE", "TRUE"),
         ("AGENT_GET_IP_ADDR_FROM_NIC", "1"),
@@ -81,11 +81,40 @@ fn boolean_environment_values_follow_go_semantics() {
 
     assert!(config.memory_include_cache);
     assert!(config.get_ip_addr_from_nic);
-    assert!(!config.enable_gpu);
     assert!(
-        !config.disable_compression,
+        !config.enable_gpu,
         "only \"true\" and \"1\" enable a boolean"
     );
+    assert!(
+        !config.disable_compression,
+        "other values leave the previous value untouched"
+    );
+}
+
+#[test]
+fn boolean_environment_values_do_not_disable_file_values() {
+    let file = write_config(r#"{"ignore_unsafe_cert": true, "memory_include_cache": true}"#);
+    let cli = CliOverrides {
+        config_file: Some(file.path().to_string_lossy().into_owned()),
+        ..CliOverrides::default()
+    };
+
+    for value in ["0", "false", "yes", "no", "off", "TRUE "] {
+        let env = env_from(&[
+            ("AGENT_IGNORE_UNSAFE_CERT", value),
+            ("AGENT_MEMORY_INCLUDE_CACHE", value),
+        ]);
+        let config = Config::load_with_env(cli.clone(), &env).expect("config should load");
+
+        assert!(
+            config.ignore_unsafe_cert,
+            "env value {value:?} must not disable a config file value"
+        );
+        assert!(
+            config.memory_include_cache,
+            "env value {value:?} must not disable a config file value"
+        );
+    }
 }
 
 #[test]
