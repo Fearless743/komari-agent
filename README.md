@@ -99,6 +99,15 @@ AGENT_TOKEN=your-token AGENT_ENDPOINT=https://panel.example.com ./komari-agent
 
 兼容性说明：
 
-- Go 版本会静默忽略未知参数；Rust 版本默认对未知参数报错（退出码 `2`）。
+- **配置优先级与 Go 相反**：Rust 为 `flag > 环境变量 > JSON > 默认值`，Go 的实际顺序为
+  `JSON > 环境变量 > flag > 默认值`（见 Go `cmd/root.go` 中先 `loadFromEnv()` 再
+  `json.Unmarshal`）。这会带来两类迁移问题：
+  - unit 文件写死 `--token`、运行时用 `AGENT_TOKEN` 轮换时，Go 会使用环境变量，而 Rust 仍使用
+    flag；请从 unit 文件中移除 `--token`，改用环境变量或配置文件提供。
+  - 依赖 JSON 配置文件覆盖命令行参数的部署，在 Rust 中需要删除冲突的 flag 或将值改由
+    环境变量/命令行提供。
+  该差异已登记在 [`docs/parity-deviations.md`](docs/parity-deviations.md)（D-001），待与 Go 对等验收确认。
+- Go 版本会静默忽略未知参数；Rust 版本默认对未知参数报错（退出码 `2`），同样登记为 D-002。
+- 位置参数与 Go 一致：接受但忽略。
 - `--autoUpdate` 与 `--memory-mode-available` 已弃用，仍会被接受并打印警告后忽略。
 - `check-mem`、`list-disk` 子命令依赖采集实现，将在后续任务中补齐。
