@@ -122,7 +122,7 @@ fn fake_nvidia_smi(fixture: &Fixture) -> PathBuf {
 fn include_mountpoints_sums_only_the_listed_paths() {
     let fixture = Fixture::new();
     // Go calls disk.Partitions first even when an include list is configured.
-    fixture.write("mounts", "/dev/sda1 / ext4 rw 0 0\n");
+    fixture.write("self/mounts", "/dev/sda1 / ext4 rw 0 0\n");
     fs::create_dir_all(fixture.path().join("mnt/a")).unwrap();
     fs::create_dir_all(fixture.path().join("mnt/b")).unwrap();
     let a = fixture.path().join("mnt/a");
@@ -160,10 +160,29 @@ fn include_mountpoints_sums_only_the_listed_paths() {
 }
 
 #[test]
+fn pid_one_mountinfo_takes_priority_over_mounts() {
+    let fixture = Fixture::new();
+    // Only the mountinfo entry points at a usable filesystem. If the `mounts`
+    // fallback were used, its missing path would produce zero.
+    fixture.write(
+        "1/mountinfo",
+        "36 29 8:1 / / ext4 rw shared:7 - ext4 /dev/sda1 rw\n",
+    );
+    fixture.write(
+        "self/mounts",
+        "/dev/missing /definitely/not/a/real/mountpoint ext4 rw 0 0\n",
+    );
+
+    let disk = fixture.collector().collect_disk();
+    assert!(disk.total > 0, "mountinfo should win over self/mounts");
+    assert!(disk.used <= disk.total);
+}
+
+#[test]
 fn injected_mount_table_drives_disk_collection_and_skips_pseudo_fs() {
     let fixture = Fixture::new();
     fixture.write(
-        "mounts",
+        "self/mounts",
         "/dev/sda1 / ext4 rw,relatime 0 0\n\
          tmpfs /tmp tmpfs rw 0 0\n\
          proc /proc proc rw 0 0\n\
@@ -175,7 +194,7 @@ fn injected_mount_table_drives_disk_collection_and_skips_pseudo_fs() {
     assert!(disk.total > 0);
     assert!(disk.used <= disk.total);
 
-    let parsed = parse_mounts(&fs::read_to_string(fixture.path().join("mounts")).unwrap());
+    let parsed = parse_mounts(&fs::read_to_string(fixture.path().join("self/mounts")).unwrap());
     assert_eq!(parsed.len(), 5);
 }
 
@@ -247,7 +266,7 @@ fn month_rotate_keeps_totals_in_memory_and_only_writes_on_flush_or_drop() {
 #[test]
 fn whitespace_only_include_list_is_an_include_branch_returning_zero() {
     let fixture = Fixture::new();
-    fixture.write("mounts", "/dev/sda1 / ext4 rw 0 0\n");
+    fixture.write("self/mounts", "/dev/sda1 / ext4 rw 0 0\n");
 
     for value in [" ", ";", "; ;"] {
         let disk =
@@ -298,7 +317,7 @@ fn report_wire_shape_contains_go_fields_and_types() {
     fs::create_dir_all(fixture.path().join("mnt/data")).unwrap();
     let data = fixture.path().join("mnt/data");
     fixture.write(
-        "mounts",
+        "self/mounts",
         &format!("/dev/sda1 {} ext4 rw 0 0\n", data.display()),
     );
     fixture.write("net/dev", &proc_net_dev(5000, 4000));
@@ -414,7 +433,7 @@ fn basic_info_includes_disk_total_and_gpu_name() {
     fs::create_dir_all(fixture.path().join("mnt/data")).unwrap();
     let data = fixture.path().join("mnt/data");
     fixture.write(
-        "mounts",
+        "self/mounts",
         &format!("/dev/sda1 {} ext4 rw 0 0\n", data.display()),
     );
     fixture.write("stat", STAT);
