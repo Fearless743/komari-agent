@@ -3,7 +3,9 @@
 Komari Agent 的 Rust 增量重写版本。目标是与 [`../komari-agent`](../komari-agent)（Go 实现）达到
 100% 功能对等；在完成对等验证之前，Go 版本保留作为回退实现。
 
-当前阶段包含 **workspace 骨架、CLI、配置加载、日志与协议 v1 模型**；采集与网络逻辑仍由后续任务实现。
+当前阶段已包含 **workspace 骨架、CLI、配置加载、日志与版本信息、协议 v1 模型、DNS/自动发现、自动更新**；
+采集与 WebSocket 传输仍在后续任务中。`agent-discovery` 与 `agent-update` 两个 crate 已实现并通过独立测试，
+尚未接入 CLI 主循环。
 协议 v2 已按用户确认裁剪（后端无 `/api/clients/v2/rpc` 路由），详见
 [`crates/agent-protocol/README.md`](crates/agent-protocol/README.md)。
 
@@ -17,8 +19,8 @@ crates/
   agent-monitor/           # 系统指标采集（后续任务）
   agent-protocol/          # 上报协议 v1（仅 v1，v2 已按确认裁剪）
   agent-client/            # HTTP / WebSocket 传输（后续任务）
-  agent-discovery/         # 自动发现（后续任务）
-  agent-update/            # 自动更新（后续任务）
+  agent-discovery/         # 自定义 DNS 解析与自动发现注册
+  agent-update/            # GitHub Release 版本检查、下载校验与原子替换
 ```
 
 后续任务通常只修改各自 crate，不需要再改根 `Cargo.toml`：常用依赖已统一预声明在
@@ -35,6 +37,13 @@ cargo fmt --all
 cargo build
 cargo test
 cargo run -p agent-cli -- --help
+```
+
+单独验证发现与更新 crate：
+
+```bash
+cargo test -p agent-discovery -p agent-update
+cargo clippy -p agent-discovery -p agent-update --all-targets -- -D warnings
 ```
 
 发布构建：
@@ -122,3 +131,18 @@ AGENT_TOKEN=your-token AGENT_ENDPOINT=https://panel.example.com ./komari-agent
   该差异已登记为 D-004。
 - `--autoUpdate` 与 `--memory-mode-available` 已弃用，仍会被接受并打印警告后忽略。
 - `check-mem`、`list-disk` 子命令依赖采集实现，将在后续任务中补齐。
+
+## 自动发现与自动更新
+
+- `agent-discovery`
+  - `dns`：自定义 DNS 服务器（`custom_dns`）、A/AAAA 查询、超时/NXDOMAIN/截断错误分类、
+    IPv4/IPv6 优先排序、内置服务器与系统解析器回退。
+  - `autodiscovery`：读取/保存 `auto-discovery.json`，使用 `auto_discovery_key` 向面板注册，
+    支持 Cloudflare Access 头、IDN endpoint 与可注入 HTTP 传输。
+- `agent-update`
+  - 查询 GitHub Releases、SemVer 比较、按 `GOOS`/`GOARCH` 选择 asset、下载大小与可选
+    SHA-256 校验、临时文件 + rename 原子替换并保留权限。
+  - `disable_auto_update` 会短路；更新成功后由调用方以退出码 42 重启（见 `RESTART_EXIT_CODE`）。
+
+详细的行为对照、测试矩阵与已知限制见
+[`docs/agent-discovery-update.md`](docs/agent-discovery-update.md)。
