@@ -8,7 +8,7 @@
 //!   [`BasicInfoV1`] to `/api/clients/uploadBasicInfo`. No envelope, no
 //!   compression.
 //! * **v2** — JSON-RPC 2.0 envelopes around the same v1 payloads, optionally
-//!   gzipped for HTTP POST.
+//!   gzipped for HTTP POST. See [`v2`].
 //!
 //! Field names, types and optionality follow the Go implementation
 //! (`komari-agent/monitoring`, `komari-agent/server`,
@@ -19,11 +19,21 @@
 
 mod error;
 pub mod v1;
+pub mod v2;
 
 pub use error::ProtocolError;
 pub use v1::{
     BasicInfoV1, ConnectionsReportV1, CpuReportV1, DiskReportV1, GpuDetailReportV1,
     GpuDeviceInfoV1, LoadReportV1, NetworkReportV1, RamReportV1, ReportV1,
+};
+pub use v2::{
+    ABORTED, AgentBasicInfoParams, AgentReportParams, ALREADY_EXISTS, CANCELLED, DATA_LOSS,
+    DEADLINE_EXCEEDED, INVALID_PARAMS, INVALID_REQUEST, INTERNAL_ERROR, JSONRPC_VERSION,
+    METHOD_AGENT_BASIC_INFO, METHOD_AGENT_REPORT, METHOD_NOT_FOUND, NOT_FOUND, OUT_OF_RANGE,
+    PARSE_ERROR, PERMISSION_DENIED, RPC_VERSION, RpcError, RpcRequest, RpcResponse,
+    UNAUTHENTICATED, UNAVAILABLE, UNIMPLEMENTED, basic_info_notification, basic_info_params,
+    basic_info_request, report_notification, report_params, report_params_from_value,
+    report_request,
 };
 
 use serde::Serialize;
