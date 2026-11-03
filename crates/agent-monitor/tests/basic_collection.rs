@@ -469,7 +469,7 @@ fn basic_info_matches_go_field_semantics() {
 fn report_metrics_match_generate_report_wire_shape() {
     let fixture = Fixture::full();
     let report = fixture.collector().collect_report_metrics();
-    let json = serde_json::to_value(&report).expect("serialize report metrics");
+    let json = serde_json::to_value(report).expect("serialize report metrics");
 
     let top_keys: std::collections::BTreeSet<_> =
         json.as_object().expect("object").keys().cloned().collect();
