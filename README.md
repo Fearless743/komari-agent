@@ -3,7 +3,8 @@
 Komari Agent 的 Rust 增量重写版本。目标是与 [`../komari-agent`](../komari-agent)（Go 实现）达到
 100% 功能对等；在完成对等验证之前，Go 版本保留作为回退实现。
 
-当前阶段只包含 **workspace 骨架、CLI、配置加载、日志与版本信息**，尚未实现采集、协议与网络逻辑。
+当前阶段包含 **workspace 骨架、CLI、配置加载、日志、版本信息与基础系统采集**
+（CPU、内存、Swap、负载、OS、uptime、虚拟化）；磁盘/网络/GPU、协议与网络逻辑尚未实现。
 
 ## 目录结构
 
@@ -12,7 +13,7 @@ Cargo.toml                 # workspace（edition 2024 / resolver 3）+ 统一依
 crates/
   agent-cli/               # 唯一可执行 crate，二进制名 komari-agent
   agent-config/            # 配置结构、默认值、环境变量、JSON 文件与 CLI 覆盖
-  agent-monitor/           # 系统指标采集（后续任务）
+  agent-monitor/           # 基础系统采集（CPU/内存/负载/OS/uptime/虚拟化）
   agent-protocol/          # 上报协议 v1/v2（后续任务）
   agent-client/            # HTTP / WebSocket 传输（后续任务）
   agent-discovery/         # 自动发现（后续任务）
