@@ -174,7 +174,8 @@ strict 模式行为与之对齐，非 strict 模式则提供本机回退。
 
 - `include_mountpoints` 使用分号分隔；设置后只统计列出的挂载点，读取失败的点直接
   跳过，不经过物理盘过滤（与 Go 一致）。
-- 未设置时从 `<proc_root>/mounts`（回退 `self/mounts`）枚举，按 Go 的
+- 未设置时按 gopsutil 顺序读取 `<proc_root>/1/mountinfo`，回退 `<proc_root>/mounts`、
+  `self/mounts`；挂载表不可读时整体返回 0（include 列表也不例外），按 Go 的
   `isPhysicalDisk` 排除 `/tmp`、`/dev`、`/run`、`/proc`、`/sys`、容器目录、
   `tmpfs`/`overlay`/`fuse` 等伪文件系统、网络盘与 `/dev/loop*`；`/` 永远保留。
 - 同一设备只统计一次，保留 `total` 更大的挂载点；ZFS dataset 归并到 pool。
@@ -188,32 +189,39 @@ strict 模式行为与之对齐，非 strict 模式则提供本机回退。
 - `include_nics` / `exclude_nics` 逗号分隔，使用 Go `filepath.Match` 风格通配符
   （`*`、`?`、`[...]`）；`br`、`docker`、`veth`、`vmbr`、`lo` 等前缀始终排除。
 - 白名单优先于黑名单；白名单为空时默认包含所有非虚拟接口。
-- `up`/`down` 是两次采样（默认间隔 1 秒）之间的字节差；计数器回绕/重置按 0 处理。
+- `up`/`down` 是两次采样（默认间隔 1 秒）之间的字节差；计数器回绕/重置按 0 处理
+  （Go 会下溢成巨大值，见 D-016）。
 - 无法读取任何网卡时返回 0 并写入 `message`。
 - `month_rotate != 0` 时，累计量来自 `<net_static_path>`（默认 `./net_static.json`）
   中 **重置日之后** 的逐接口增量；重置日按本地时区计算，月份不存在该日时顺延到
-  下月 1 日。
+  下月 1 日；`month_rotate` 不在 1..=31 时使用当前时刻（当天流量不清零）。
+- 每次上报的增量先进入内存 cache，达到 `save_interval`（默认 600 秒）才聚合成一条
+  记录并原子写盘；`Collector` 销毁时 flush 并保存。记录前先应用网卡过滤，loopback/
+  docker* 等不会写入数据库。
 - Linux 从 `<proc_root>/net/dev` 读取累计字节/包；其它平台使用 `sysinfo`。
 
-与 Go 的差异：Go 用后台 goroutine 每 2 秒采样一次；本 crate 在每次上报时采样并
-立即原子写盘，因此 `net_static.json` 的记录间隔等于上报间隔，且不会在没有上报时
-持续积累（已登记 D-013）。
+与 Go 的差异：Go 用后台 goroutine 每 2 秒采样一次；本 crate 在每次上报时采样，
+增量缓存到 `save_interval` 再落盘，因此写盘次数/记录数与上报频率解耦。没有上报时
+不会持续采样，停止上报前最后一个窗口依赖 `Collector` 的 `Drop` 保存（D-013）。
 
 ## 连接数与进程数
 
-对应 `monitoring/unit/ip.go`（连接部分）与 `process_linux.go`：
+对应 `monitoring/unit/net.go`（`ConnectionsCount`）、`process_linux.go` 与非 Linux
+`process_*.go`：
 
 - TCP = `net/tcp` + `net/tcp6` 数据行，UDP = `net/udp` + `net/udp6`；缺失的单个文件
   跳过，整族都缺失则视为失败并上报 0。
 - 进程数为 `<proc_root>` 下名称可解析为整数的条目数，`HOST_PROC` 生效。
-- 非 Linux 进程数使用 `sysinfo`；连接数目前只实现 Linux（D-014）。
+- 非 Linux 进程数使用 `sysinfo`（Go 为 `ps` 行数或 `K32EnumProcesses`）；连接数目前
+  只实现 Linux，非 Linux 恒为 0（D-014、D-017）。
 
 ## GPU
 
 对应 `monitoring/unit/gpu*.go`：
 
 - `gpu_name`（基础信息）Linux 先 `lspci`，再 `/sys/class/drm`；macOS 使用
-  `system_profiler`，FreeBSD 使用 `pciconf`，Windows 返回 `Unknown`。
+  `system_profiler`，FreeBSD 使用 `pciconf`，Windows 返回 `Unknown`（Go 用 DXGI，
+  见 D-017）。
 - `enable_gpu` 打开详细探测：优先定位并执行 `nvidia-smi -q -x`，XML 解析成功即使用
   NVIDIA；否则尝试 `rocm-smi --showallinfo --json`（AMD）。Intel 目前仅参与型号
   识别，不提供详细显存/利用率。
@@ -277,9 +285,13 @@ Linux 按 Go 的顺序检测：Android（`getprop`/`build.prop`/目录）、Prox
 - 非 strict 模式下注入的 `proc_root` 不可读会退回本机 `sysinfo`；容器部署通过
   `from_config` 自动启用 strict 以避免误报。
 - CPU `collect_cpu()` 的采样窗口是两次调用间隔；需要固定窗口时使用 `sample_cpu(window)`。
-- 月流量数据库没有后台采样线程，采样点等于上报点（D-013）。
-- Linux 连接数在 `/proc/net` 不可读时不像 Go 那样回退 netlink，而是上报 0（D-014）。
+- 月流量数据库没有后台采样线程，采样点等于上报点；进程被强制杀死时最多丢失一个
+  `save_interval` 窗口的内存增量（D-013）。
+- Linux 连接数在 `/proc/net` 不可读时不像 Go 那样回退 gopsutil 的 `/proc/<pid>/fd`
+  inode 枚举（不是 netlink），而是上报 0；非 Linux 连接数恒为 0（D-014、D-017）。
 - 详细 GPU 探测为空（例如驱动存在但无设备）时省略 `gpu`，不会产生 Go 的
   `count:0` + `NaN` 平均使用率（D-015）。
-- 磁盘挂载表与网络计数器从注入的 `proc_root` 读取；这与 Go 的 gopsutil 直接读宿主
-  `/proc` 略有不同，容器部署通常更符合预期。
+- Windows GPU 型号未知；非 Linux 进程数使用 `sysinfo`，与 `ps`/EnumProcesses 口径
+  可能略有差异（D-017）。
+- 磁盘挂载表与网络计数器从注入的 `proc_root` 读取；挂载表来源与 gopsutil 一致
+  （优先 `/proc/1/mountinfo`），但读取根可被 `HOST_PROC` 重定向，容器部署更可控。
