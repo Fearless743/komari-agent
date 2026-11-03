@@ -9,6 +9,7 @@ description = "Auto discovery and DNS support for the Komari agent"
 
 [dependencies]
 async-trait.workspace = true
+getrandom = "0.3"
 hostname = "0.4"
 idna = "1"
 if-addrs = "0.15"

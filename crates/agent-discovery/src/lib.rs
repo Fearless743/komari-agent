@@ -19,8 +19,8 @@ pub use autodiscovery::{
     DiscoveryResult, HttpClient, HttpRequest, HttpResponse, ReqwestHttpClient, default_config_path,
 };
 pub use dns::{
-    BUILTIN_DNS_SERVERS, DnsError, DnsRecord, DnsResolver, ParsedResponse, PreferIp, RecordType,
-    ResolverConfig, local_has_ipv4, normalize_dns_server, parse_response, sort_ips_by_preference,
-    split_host_port,
+    BUILTIN_DNS_SERVERS, DnsError, DnsHeader, DnsRecord, DnsResolver, ExpectedQuestion,
+    ParsedResponse, PreferIp, RecordType, ResolverConfig, build_query, local_has_ipv4,
+    normalize_dns_server, parse_header, parse_response, sort_ips_by_preference, split_host_port,
 };
 pub use idna::{IdnaError, convert_host_to_ascii, convert_url_to_ascii};

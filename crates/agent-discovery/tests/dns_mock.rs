@@ -7,7 +7,8 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use agent_discovery::dns::{DnsError, DnsResolver, PreferIp, ResolverConfig};
-use tokio::net::UdpSocket;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, UdpSocket};
 
 fn question_type(query: &[u8]) -> Option<u16> {
     let mut position = 12;
@@ -82,6 +83,73 @@ fn custom_resolver(server: SocketAddr, prefer: PreferIp) -> DnsResolver {
         prefer_ip: prefer,
     })
     .unwrap()
+}
+
+async fn start_truncated_dns() -> SocketAddr {
+    let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let address = udp.local_addr().unwrap();
+    let tcp = TcpListener::bind(address).await.unwrap();
+
+    tokio::spawn(async move {
+        let mut buffer = vec![0u8; 2048];
+        loop {
+            let Ok((length, peer)) = udp.recv_from(&mut buffer).await else {
+                break;
+            };
+            let query = &buffer[..length];
+            let mut answer = response(query, 0x8380, &[(1, vec![203, 0, 113, 9])]);
+            // Simulate a UDP packet cut in the middle of the A record data.
+            answer.truncate(answer.len() - 2);
+            let _ = udp.send_to(&answer, peer).await;
+        }
+    });
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = tcp.accept().await else {
+                break;
+            };
+
+            let Ok(query_length) = stream.read_u16().await else {
+                continue;
+            };
+            let mut query = vec![0u8; query_length as usize];
+            if stream.read_exact(&mut query).await.is_err() {
+                continue;
+            }
+
+            let answer = match question_type(&query) {
+                Some(1) => response(&query, 0x8180, &[(1, vec![203, 0, 113, 9])]),
+                _ => response(&query, 0x8180, &[]),
+            };
+            let _ = stream.write_u16(answer.len() as u16).await;
+            let _ = stream.write_all(&answer).await;
+            let _ = stream.flush().await;
+        }
+    });
+
+    address
+}
+
+#[tokio::test]
+async fn retries_truncated_udp_response_over_tcp() {
+    let server = start_truncated_dns().await;
+    let resolver = custom_resolver(server, PreferIp::V4);
+
+    let addresses = resolver.resolve_host("example.com").await.unwrap();
+    assert_eq!(
+        addresses,
+        vec!["203.0.113.9".parse::<std::net::IpAddr>().unwrap()]
+    );
+}
+
+#[tokio::test]
+async fn classifies_refused() {
+    let server = start_dns(Box::new(|query| Some(response(query, 0x8185, &[])))).await;
+    let resolver = custom_resolver(server, PreferIp::Auto);
+
+    let error = resolver.resolve_host("example.com").await.unwrap_err();
+    assert!(matches!(error, DnsError::Refused), "{error:?}");
 }
 
 #[tokio::test]

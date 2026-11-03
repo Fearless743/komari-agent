@@ -320,6 +320,8 @@ impl DnsResolver {
         let address = resolve_server_address(server, self.config.timeout).await?;
         let query_name = to_ascii_name(name)?;
         let packet = build_query(next_id(), &query_name, record_type)?;
+        let id = query_id(&packet);
+        let expected = ExpectedQuestion::new(id, query_name.clone(), record_type);
 
         let response =
             match tokio::time::timeout(self.config.timeout, query_udp(address, &packet)).await {
@@ -327,17 +329,20 @@ impl DnsResolver {
                 Err(_) => return Err(DnsError::Timeout),
             };
 
-        let parsed = parse_response(&response, query_id(&packet))?;
+        // Read only the header first: a truncated UDP response may contain a
+        // partial answer and must be retried over TCP before parsing answers.
+        let header = parse_header(&response, id)?;
 
-        if parsed.truncated {
+        if header.truncated {
             // A truncated UDP answer must be retried over TCP, like the Go
             // resolver does. If TCP is unavailable the truncation is surfaced.
             match tokio::time::timeout(self.config.timeout, query_tcp(address, &packet)).await {
                 Ok(Ok(response)) => {
-                    let parsed = parse_response(&response, query_id(&packet))?;
-                    if parsed.truncated {
+                    let header = parse_header(&response, id)?;
+                    if header.truncated {
                         return Err(DnsError::Truncated);
                     }
+                    let parsed = parse_response(&response, &expected)?;
                     check_rcode(parsed.rcode)?;
                     return Ok(records_to_ips(parsed.answers));
                 }
@@ -349,6 +354,7 @@ impl DnsResolver {
             }
         }
 
+        let parsed = parse_response(&response, &expected)?;
         check_rcode(parsed.rcode)?;
         Ok(records_to_ips(parsed.answers))
     }
@@ -481,8 +487,10 @@ pub fn local_has_ipv4() -> bool {
         if_addrs::get_if_addrs()
             .map(|interfaces| {
                 interfaces.iter().any(|interface| {
-                    let ip = interface.ip();
-                    ip.is_ipv4() && !ip.is_loopback()
+                    // `is_oper_up` mirrors Go's `net.FlagUp` check. Interface
+                    // level loopback detection is not exposed by if-addrs, so
+                    // the address-level check below is used as well.
+                    interface.is_oper_up() && !interface.is_loopback() && interface.ip().is_ipv4()
                 })
             })
             .unwrap_or(false)
@@ -500,21 +508,44 @@ pub struct ParsedResponse {
     pub answers: Vec<DnsRecord>,
 }
 
-/// A resource record returned by the DNS server.
+/// Question that a response must echo, used to reject spoofed or stale
+/// responses that happen to reuse the transaction ID.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DnsRecord {
+pub struct ExpectedQuestion {
+    pub id: u16,
     pub name: String,
-    pub record_type: u16,
-    pub ttl: u32,
-    /// `Some` for A/AAAA records, `None` for other record types.
-    pub ip: Option<IpAddr>,
+    pub record_type: RecordType,
+    pub class: u16,
 }
 
-/// Parse a DNS response packet.
+impl ExpectedQuestion {
+    /// Build an IN-class question for `name`.
+    pub fn new(id: u16, name: impl Into<String>, record_type: RecordType) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            record_type,
+            class: 1,
+        }
+    }
+}
+
+/// Header-only view of a DNS response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DnsHeader {
+    pub id: u16,
+    pub rcode: u8,
+    pub truncated: bool,
+    pub question_count: u16,
+    pub answer_count: u16,
+}
+
+/// Parse and validate only the DNS header.
 ///
-/// This is public so the packet parsing (compression pointers, A/AAAA,
-/// NXDOMAIN, truncation) can be tested without a live server.
-pub fn parse_response(packet: &[u8], expected_id: u16) -> Result<ParsedResponse, DnsError> {
+/// This exists because a UDP response with `TC=1` may end in the middle of an
+/// answer record. The header must be inspected before the answer section so
+/// the resolver can retry over TCP instead of reporting a malformed packet.
+pub fn parse_header(packet: &[u8], expected_id: u16) -> Result<DnsHeader, DnsError> {
     if packet.len() < 12 {
         return Err(DnsError::BadResponse(
             "packet shorter than header".to_owned(),
@@ -529,8 +560,7 @@ pub fn parse_response(packet: &[u8], expected_id: u16) -> Result<ParsedResponse,
     }
 
     let flags = u16::from_be_bytes([packet[2], packet[3]]);
-    let is_response = flags & 0x8000 != 0;
-    if !is_response {
+    if flags & 0x8000 == 0 {
         return Err(DnsError::BadResponse("packet is not a response".to_owned()));
     }
 
@@ -539,22 +569,70 @@ pub fn parse_response(packet: &[u8], expected_id: u16) -> Result<ParsedResponse,
         return Err(DnsError::BadResponse(format!("unexpected opcode {opcode}")));
     }
 
-    let truncated = flags & 0x0200 != 0;
+    Ok(DnsHeader {
+        id,
+        rcode: (flags & 0x000F) as u8,
+        truncated: flags & 0x0200 != 0,
+        question_count: u16::from_be_bytes([packet[4], packet[5]]),
+        answer_count: u16::from_be_bytes([packet[6], packet[7]]),
+    })
+}
+
+/// A resource record returned by the DNS server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DnsRecord {
+    pub name: String,
+    pub record_type: u16,
+    pub ttl: u32,
+    /// `Some` for A/AAAA records, `None` for other record types.
+    pub ip: Option<IpAddr>,
+}
+
+/// Parse a DNS response packet.
+///
+/// This is public so the packet parsing (compression pointers, A/AAAA,
+/// NXDOMAIN, truncation) can be tested without a live server.
+pub fn parse_response(
+    packet: &[u8],
+    expected: &ExpectedQuestion,
+) -> Result<ParsedResponse, DnsError> {
+    let header = parse_header(packet, expected.id)?;
+
+    let flags = u16::from_be_bytes([packet[2], packet[3]]);
     let authoritative = flags & 0x0400 != 0;
     let recursion_available = flags & 0x0080 != 0;
-    let rcode = (flags & 0x000F) as u8;
+    let question_count = header.question_count as usize;
+    let answer_count = header.answer_count as usize;
 
-    let question_count = u16::from_be_bytes([packet[4], packet[5]]) as usize;
-    let answer_count = u16::from_be_bytes([packet[6], packet[7]]) as usize;
+    if question_count != 1 {
+        return Err(DnsError::BadResponse(format!(
+            "expected exactly one question, got {question_count}"
+        )));
+    }
 
     let mut position = 12;
+    let question_name = read_name(packet, &mut position)?;
 
-    for _ in 0..question_count {
-        read_name(packet, &mut position)?;
-        position = position
-            .checked_add(4)
-            .filter(|position| *position <= packet.len())
-            .ok_or_else(|| DnsError::BadResponse("truncated question section".to_owned()))?;
+    if position + 4 > packet.len() {
+        return Err(DnsError::BadResponse(
+            "truncated question section".to_owned(),
+        ));
+    }
+
+    let question_type = u16::from_be_bytes([packet[position], packet[position + 1]]);
+    let question_class = u16::from_be_bytes([packet[position + 2], packet[position + 3]]);
+    position += 4;
+
+    if !question_name.eq_ignore_ascii_case(&expected.name)
+        || question_type != expected.record_type.as_u16()
+        || question_class != expected.class
+    {
+        return Err(DnsError::BadResponse(format!(
+            "response question {question_name}/{question_type}/{question_class} does not match query {}/{}/{}",
+            expected.name,
+            expected.record_type.as_u16(),
+            expected.class
+        )));
     }
 
     let mut answers = Vec::with_capacity(answer_count.min(64));
@@ -608,9 +686,9 @@ pub fn parse_response(packet: &[u8], expected_id: u16) -> Result<ParsedResponse,
     }
 
     Ok(ParsedResponse {
-        id,
-        rcode,
-        truncated,
+        id: header.id,
+        rcode: header.rcode,
+        truncated: header.truncated,
         authoritative,
         recursion_available,
         answers,
@@ -828,8 +906,16 @@ async fn query_tcp(address: SocketAddr, packet: &[u8]) -> Result<Vec<u8>, DnsErr
 }
 
 fn next_id() -> u16 {
-    static NEXT_ID: AtomicU16 = AtomicU16::new(0x9E37);
-    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    // Use the OS CSPRNG so the transaction ID cannot be predicted by an
+    // off-path attacker. The atomic counter is only a last-resort fallback for
+    // platforms where getrandom is unavailable.
+    let mut bytes = [0u8; 2];
+    if getrandom::fill(&mut bytes).is_ok() {
+        return u16::from_be_bytes(bytes);
+    }
+
+    static FALLBACK_ID: AtomicU16 = AtomicU16::new(0x9E37);
+    FALLBACK_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 /// DNS resolution errors, classified like the Go resolver's failure modes.
@@ -907,6 +993,10 @@ mod tests {
         packet
     }
 
+    fn expected(id: u16, name: &str, record_type: RecordType) -> ExpectedQuestion {
+        ExpectedQuestion::new(id, name, record_type)
+    }
+
     #[test]
     fn normalize_dns_server_matches_go_rules() {
         let cases = [
@@ -950,7 +1040,7 @@ mod tests {
     #[test]
     fn parses_a_record_with_compression_pointer() {
         let packet = answer_packet(7, 0x8180, 1, &[93, 184, 216, 34]);
-        let parsed = parse_response(&packet, 7).unwrap();
+        let parsed = parse_response(&packet, &expected(7, "example.com", RecordType::A)).unwrap();
 
         assert_eq!(parsed.rcode, 0);
         assert!(!parsed.truncated);
@@ -974,7 +1064,8 @@ mod tests {
         data[15] = 1;
 
         let packet = answer_packet(8, 0x8180, 28, &data);
-        let parsed = parse_response(&packet, 8).unwrap();
+        let parsed =
+            parse_response(&packet, &expected(8, "example.com", RecordType::Aaaa)).unwrap();
 
         assert_eq!(parsed.answers.len(), 1);
         assert_eq!(
@@ -986,12 +1077,13 @@ mod tests {
     #[test]
     fn parses_nxdomain_and_truncation_flags() {
         let nxdomain = answer_packet(9, 0x8183, 1, &[]);
-        let parsed = parse_response(&nxdomain, 9).unwrap();
+        let parsed = parse_response(&nxdomain, &expected(9, "example.com", RecordType::A)).unwrap();
         assert_eq!(parsed.rcode, 3);
         assert!(matches!(check_rcode(parsed.rcode), Err(DnsError::NxDomain)));
 
         let truncated = answer_packet(10, 0x8380, 1, &[]);
-        let parsed = parse_response(&truncated, 10).unwrap();
+        let parsed =
+            parse_response(&truncated, &expected(10, "example.com", RecordType::A)).unwrap();
         assert!(parsed.truncated);
         assert_eq!(parsed.rcode, 0);
     }
@@ -1001,11 +1093,11 @@ mod tests {
         let packet = answer_packet(11, 0x8180, 1, &[1, 2, 3, 4]);
 
         assert!(matches!(
-            parse_response(&packet, 12),
+            parse_response(&packet, &expected(12, "example.com", RecordType::A)),
             Err(DnsError::BadResponse(_))
         ));
         assert!(matches!(
-            parse_response(&packet[..10], 11),
+            parse_response(&packet[..10], &expected(11, "example.com", RecordType::A)),
             Err(DnsError::BadResponse(_))
         ));
     }
@@ -1057,5 +1149,54 @@ mod tests {
         assert_eq!(config.fallback_servers.len(), BUILTIN_DNS_SERVERS.len());
         assert_eq!(config.fallback_servers[0], "[2606:4700:4700::1111]:53");
         assert!(config.system_fallback);
+    }
+    #[test]
+    fn rejects_mismatched_question() {
+        let packet = answer_packet(21, 0x8180, 1, &[192, 0, 2, 1]);
+
+        assert!(matches!(
+            parse_response(&packet, &expected(21, "example.com", RecordType::Aaaa)),
+            Err(DnsError::BadResponse(message)) if message.contains("does not match")
+        ));
+        assert!(matches!(
+            parse_response(&packet, &expected(21, "other.example", RecordType::A)),
+            Err(DnsError::BadResponse(message)) if message.contains("does not match")
+        ));
+    }
+
+    #[test]
+    fn rejects_compression_pointer_loop() {
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&30u16.to_be_bytes());
+        packet.extend_from_slice(&0x8180u16.to_be_bytes());
+        packet.extend_from_slice(&1u16.to_be_bytes());
+        packet.extend_from_slice(&1u16.to_be_bytes());
+        packet.extend_from_slice(&0u16.to_be_bytes());
+        packet.extend_from_slice(&0u16.to_be_bytes());
+        // Question name points at itself at offset 12.
+        packet.extend_from_slice(&[0xC0, 0x0C]);
+        packet.extend_from_slice(&1u16.to_be_bytes());
+        packet.extend_from_slice(&1u16.to_be_bytes());
+
+        assert!(matches!(
+            parse_response(&packet, &expected(30, "example.com", RecordType::A)),
+            Err(DnsError::BadResponse(message)) if message.contains("pointer loop")
+        ));
+    }
+
+    #[test]
+    fn header_parser_accepts_truncated_partial_answer() {
+        let mut packet = answer_packet(31, 0x8380, 1, &[192]);
+        // Make the answer record shorter than its declared A payload.
+        packet.truncate(packet.len() - 1);
+
+        let header = parse_header(&packet, 31).unwrap();
+        assert!(header.truncated);
+        assert_eq!(header.rcode, 0);
+
+        assert!(matches!(
+            parse_response(&packet, &expected(31, "example.com", RecordType::A)),
+            Err(DnsError::BadResponse(_))
+        ));
     }
 }
