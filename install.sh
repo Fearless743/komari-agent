@@ -894,6 +894,12 @@ PY
             die "Failed to merge $file with python3; the original file was not changed"
         fi
     else
+        if [ -s "$file" ] &&
+            ! grep -Eq '^[[:space:]]*\{[[:space:]]*\}[[:space:]]*$' "$file"; then
+            rm -f "$tmp" "$backup" "$base_tmp"
+            umask "$old_umask"
+            die "jq or python3 is required to merge existing config $file; install one and retry"
+        fi
         if ! fallback_rewrite_config "$file" "$tmp"; then
             rm -f "$tmp" "$backup" "$base_tmp"
             umask "$old_umask"
@@ -922,6 +928,8 @@ install_config() {
     if [ "$CONFIG_EXPLICIT" = true ]; then
         if [ ! -f "$CONFIG_FILE" ]; then
             log_warning "Config file $CONFIG_FILE does not exist; the agent will fail to start until it is created."
+        else
+            chmod 600 "$CONFIG_FILE" || die "Failed to set permissions on $CONFIG_FILE"
         fi
         log_info "Using existing config file: $CONFIG_FILE"
         return 0
@@ -972,6 +980,11 @@ sh_quote() {
     printf '%q' "$1"
 }
 
+# Single-quoted word for values that OpenRC/rc.subr later eval.
+sh_single_quote() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 # systemd ExecStart quoting: backslash, double quote and % specifiers.
 systemd_quote_arg() {
     local arg="$1"
@@ -984,6 +997,12 @@ systemd_quote_arg() {
     else
         printf '%s' "$arg"
     fi
+}
+
+# WorkingDirectory/other path directives: no quoting and no $ expansion.
+# systemd still treats % as a specifier, so double it.
+systemd_path_escape() {
+    printf '%s' "${1//%/%%}"
 }
 
 format_exec_start_systemd() {
@@ -1006,6 +1025,17 @@ format_exec_start_double() {
         else
             out="$out $arg"
         fi
+    done
+    printf '%s' "${out# }"
+}
+
+# Quote for values that are stored and later eval'd (OpenRC command_args,
+# rc.subr command_args): single quotes survive the assignment and the eval.
+format_exec_start_eval() {
+    local out=""
+    local arg
+    for arg in "$@"; do
+        out="$out $(sh_single_quote "$arg")"
     done
     printf '%s' "${out# }"
 }
@@ -1041,7 +1071,7 @@ write_service() {
             local unit="${SERVICE_ROOT}/etc/systemd/system/${SERVICE_NAME}.service"
             local exec_start working_directory
             exec_start=$(format_exec_start_systemd "$AGENT_PATH" "${EXEC_ARGS[@]}")
-            working_directory=$(systemd_quote_arg "$TARGET_DIR")
+            working_directory=$(systemd_path_escape "$TARGET_DIR")
             if [ "$DRY_RUN" = true ]; then
                 log_info "[dry-run] would write $unit"
                 printf '%s\n' "ExecStart=$exec_start"
@@ -1074,9 +1104,9 @@ EOF
         openrc)
             local service_file="${SERVICE_ROOT}/etc/init.d/${SERVICE_NAME}"
             local command_path command_args directory
-            command_path=$(shell_dquote_content "$AGENT_PATH")
-            command_args=$(format_exec_start_double "${EXEC_ARGS[@]}")
-            directory=$(shell_dquote_content "$TARGET_DIR")
+            command_path=$(shell_dquote_content "$(sh_single_quote "$AGENT_PATH")")
+            command_args=$(shell_dquote_content "$(format_exec_start_eval "${EXEC_ARGS[@]}")")
+            directory=$(shell_dquote_content "$(sh_single_quote "$TARGET_DIR")")
             if [ "$DRY_RUN" = true ]; then
                 log_info "[dry-run] would write $service_file"
                 return 0
@@ -1254,7 +1284,7 @@ EOF
             local service_file="${SERVICE_ROOT}/usr/local/etc/rc.d/${SERVICE_NAME}"
             local rc_name="${SERVICE_NAME//-/_}"
             local daemon_args agent_basename
-            daemon_args=$(format_exec_start_double "$AGENT_PATH" "${EXEC_ARGS[@]}")
+            daemon_args=$(shell_dquote_content "$(format_exec_start_eval "$AGENT_PATH" "${EXEC_ARGS[@]}")")
             agent_basename=$(basename "$AGENT_PATH")
             if [ "$DRY_RUN" = true ]; then
                 log_info "[dry-run] would write $service_file"
@@ -1293,7 +1323,7 @@ EOF
         nixos)
             local exec_line working_directory
             exec_line=$(nix_escape "$(format_exec_start_systemd "$AGENT_PATH" "${EXEC_ARGS[@]}")")
-            working_directory=$(nix_escape "$TARGET_DIR")
+            working_directory=$(nix_escape "$(systemd_path_escape "$TARGET_DIR")")
             log_warning "NixOS detected. System services must be configured declaratively."
             cat <<EOF
 
@@ -1355,12 +1385,32 @@ resolve_download() {
     DOWNLOAD_URL="${base}/${download_path}/${file_name}"
 }
 
+is_protected_dir() {
+    local dir="$1"
+    [ "$dir" != "/" ] && dir="${dir%/}"
+    case "$dir" in
+        / | /bin | /boot | /dev | /etc | /home | /lib | /lib64 | /media | /mnt | \
+            /opt | /proc | /root | /run | /sbin | /srv | /sys | /tmp | /usr | \
+            /usr/local | /var | /Library | /System | /Users)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 ensure_target_dir() {
     if [ -d "$TARGET_DIR" ]; then
+        is_protected_dir "$TARGET_DIR" &&
+            die "Refusing to change permissions on system directory $TARGET_DIR; use a dedicated subdirectory"
         local mode=""
         mode=$(stat -c %a "$TARGET_DIR" 2>/dev/null || stat -f %Lp "$TARGET_DIR" 2>/dev/null || true)
         if [ -n "$mode" ] && [ "$mode" != "700" ]; then
-            log_warning "Install directory $TARGET_DIR has mode $mode; 700 is recommended because auto-discovery.json contains a token."
+            log_warning "Install directory $TARGET_DIR has mode $mode; changing to 700 because auto-discovery.json contains a token."
+            chmod 700 "$TARGET_DIR" || die "Failed to set permissions on $TARGET_DIR"
+        fi
+        if [ -f "$TARGET_DIR/auto-discovery.json" ]; then
+            chmod 600 "$TARGET_DIR/auto-discovery.json" ||
+                die "Failed to set permissions on $TARGET_DIR/auto-discovery.json"
         fi
         return 0
     fi
