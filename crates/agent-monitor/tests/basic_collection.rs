@@ -421,6 +421,12 @@ fn host_sys_env_lookup_is_injected() {
         options.process_path,
         Some(std::ffi::OsString::from("/injected/bin"))
     );
+
+    let overridden = options.with_process_path("/override/bin");
+    assert_eq!(
+        overridden.process_path,
+        Some(std::ffi::OsString::from("/override/bin"))
+    );
 }
 
 #[test]

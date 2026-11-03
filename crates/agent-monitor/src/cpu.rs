@@ -355,6 +355,35 @@ cpu cores\t: 8
     }
 
     #[test]
+    fn cpu_cores_per_socket_wins_over_conflicting_pairs() {
+        let content = "\
+processor\t: 0
+physical id\t: 0
+core id\t\t: 0
+cpu cores\t: 4
+
+processor\t: 1
+physical id\t: 0
+core id\t\t: 1
+cpu cores\t: 4
+
+processor\t: 2
+physical id\t: 1
+core id\t\t: 0
+cpu cores\t: 4
+
+processor\t: 3
+physical id\t: 1
+core id\t\t: 1
+cpu cores\t: 4
+";
+        let (_, physical) = parse_cpuinfo(content);
+        // Distinct (physical id, core id) pairs would be 4; cpu cores per
+        // socket (4 + 4) must win, matching gopsutil's cpuinfo fallback.
+        assert_eq!(physical, 8);
+    }
+
+    #[test]
     fn prefers_model_name_then_processor() {
         let content = "\
 Hardware\t: Example Board
