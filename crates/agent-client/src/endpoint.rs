@@ -71,7 +71,8 @@ fn normalize_endpoint(endpoint: &str) -> Result<(String, &'static str), Endpoint
         return Err(EndpointError::Empty);
     }
 
-    let trimmed = endpoint.trim_end_matches('/');
+    // Go uses strings.TrimSuffix, which removes exactly one trailing slash.
+    let trimmed = endpoint.strip_suffix('/').unwrap_or(endpoint);
     let parsed = Url::parse(trimmed).map_err(|source| EndpointError::Invalid {
         url: endpoint.to_owned(),
         source,
@@ -111,9 +112,10 @@ mod tests {
 
     #[test]
     fn trailing_slashes_and_path_prefixes_are_preserved_once() {
+        // Exactly one slash is removed, matching strings.TrimSuffix.
         assert_eq!(
             build_ws_endpoint("https://panel.example.com///", "t").unwrap(),
-            "wss://panel.example.com/api/clients/report?token=t"
+            "wss://panel.example.com///api/clients/report?token=t"
         );
         assert_eq!(
             build_ws_endpoint("https://panel.example.com/komari/", "t").unwrap(),
