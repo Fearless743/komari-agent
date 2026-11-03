@@ -53,10 +53,12 @@ A02 只提供数据类型；真正的协议编码由 A04/A05 负责。
 
 ### CPU 采样窗口
 
-- `collect_cpu()`：首次调用阻塞 `cpu_sample_interval`（默认 1 秒，与 Go 一致），
+- `collect_cpu()`：Linux 首次调用阻塞 `cpu_sample_interval`（默认 1 秒，与 Go 一致），
   之后使用上一次样本，采样窗口 = **两次调用之间的实际间隔**，不再阻塞。
-- `sample_cpu(window)`：忽略缓存，强制读取两次样本并等待 `window`，供 A05 需要固定
-  上报窗口时使用。
+- **非 Linux**：走 `sysinfo`，每次 `collect_cpu()` 都会阻塞一次采样窗口（至少
+  `sysinfo::MINIMUM_CPU_UPDATE_INTERVAL`，默认约 1 秒）。
+- `sample_cpu(window)`：绕过缓存，强制读取两次样本并等待 `window`，供 A05 需要固定
+  上报窗口时使用；采样结果会**写回缓存**，之后的 `collect_cpu()` 以该样本为起点。
 
 Go 的 `Cpu()` 每次调用固定采样 1 秒；两者在持续上报时结果接近，但窗口语义不同。
 
@@ -87,16 +89,25 @@ let options = MonitorOptions::from_env_lookup(&|key| std::env::var(key).ok());
 
 ```rust
 let options = MonitorOptions::default()
-    .with_proc_root("/host/proc")
+    .with_proc_root("/host/proc")   // 自动 strict_proc = true
     .with_sys_root("/host/sys")
     .with_root("/host/root");
 ```
 
+`with_proc_root()` 与 `HOST_PROC` 一样会自动启用 `strict_proc`；若确实希望回退本机
+`sysinfo`，在其后调用 `.with_strict_proc(false)`。
+
+### A05 接线：HOST_SYS
+
+`agent-config` 目前只有 `host_proc` 字段。A05 接线时如果需要宿主机 sysfs（物理核心
+topology / DMI），必须自行读取 `HOST_SYS` 并调用 `with_sys_root()`；本 crate 不直接读
+全局环境变量。大多数容器中默认 `/sys` 已反映宿主机拓扑，未设置 `HOST_SYS` 时可保持默认。
+
 ### strict_proc
 
-`from_config` 与 `from_env_lookup` 在 `HOST_PROC` 非空时会自动启用 `strict_proc`。
-此时 proc 读取失败返回空值/未知值（CPU 为 `Unknown`、1 核），而不是悄悄改用容器
-自身的 `sysinfo` 数据。失败时首次会通过 `tracing::warn!` 输出一条告警。
+`from_config`、`from_env_lookup`（`HOST_PROC` 非空）与 `with_proc_root()` 都会自动
+启用 `strict_proc`。此时 proc 读取失败返回空值/未知值（CPU 为 `Unknown`、1 核），
+而不是悄悄改用容器自身的 `sysinfo` 数据。失败时首次会通过 `tracing::warn!` 输出一条告警。
 
 未配置 `HOST_PROC` 时默认 `strict_proc = false`，proc 不可读会回退本机 `sysinfo`。
 可用 `with_strict_proc(true/false)` 显式覆盖。
@@ -128,7 +139,7 @@ strict 模式行为与之对齐，非 strict 模式则提供本机回退。
 
 ## 物理核心数
 
-顺序与 gopsutil 对齐：
+顺序如下：
 
 1. `<sys_root>/devices/system/cpu/cpuN/topology/core_cpus_list`；
 2. `thread_siblings_list`（旧内核）；
@@ -136,7 +147,12 @@ strict 模式行为与之对齐，非 strict 模式则提供本机回退。
 4. `/proc/cpuinfo` 的 `physical id` + `cpu cores` 求和；
 5. 仅按 `processor` 条目去重（ARM64/RISC-V/LoongArch 常见）。
 
-CPU 型号优先级同样对齐 gopsutil：`model name`/`Model Name`/`cpu`/`uarch`，然后
+第 1-2 步与 gopsutil 一致；第 4 步对应 gopsutil 的 cpuinfo 回退。第 3、5 步是 Rust
+的安全兜底：gopsutil 在缺少 topology 且 cpuinfo 没有 `physical id` + `cpu cores` 时
+返回 `0`，本实现则分别返回去重后的核心数/逻辑核数。该差异已登记为
+[`docs/parity-deviations.md`](../../docs/parity-deviations.md) 的 D-004。
+
+CPU 型号优先级对齐 gopsutil：`model name`/`Model Name`/`cpu`/`uarch`，然后
 `Processor`、`Hardware`、`Model`。
 
 ## 内存口径

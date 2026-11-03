@@ -55,3 +55,19 @@
 （`true`/`1` 启用，其他值保持原值）。
 
 状态：**用户确认的有意差异**（A01 决策：保持 Rust 现状，只接受 `true`/`false`，不扩展解析器）。
+
+## D-004 CPU 物理核心数的安全兜底不同
+
+- **Go**：`cpu.Counts(false)` 只使用 sysfs topology，以及 `/proc/cpuinfo` 的
+  `physical id` + `cpu cores`。两者都缺失时返回 `0`。
+- **Rust**：在相同两步之后，还会依次尝试：
+  1. `/proc/cpuinfo` 的 `physical id` + `core id` 去重；
+  2. 仅按 `processor` 条目去重（ARM64/RISC-V/LoongArch 等常见）。
+
+原因：避免 ARM/精简容器把物理核心数固定上报为 `0`，让基础信息更有参考价值。
+
+影响：在缺少 topology 且 cpuinfo 无 `physical id` + `cpu cores` 的环境中，Go 上报
+`cpu_physical_cores = 0`，Rust 上报去重后的核心数（通常等于逻辑核数）。依赖
+`0 = 未知` 语义的消费方需要区分该差异。
+
+状态：有意差异，待对等验收确认。
