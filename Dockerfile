@@ -21,7 +21,7 @@ ENV KOMARI_AGENT_VERSION=${KOMARI_AGENT_VERSION} \
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
-# Only agent-cli is needed; it has no C dependencies, so the image stays small.
+# Build only the agent binary; the runtime stage keeps the final image small.
 RUN cargo build --release --locked -p agent-cli \
     && install -Dm755 target/release/komari-agent /out/komari-agent
 
