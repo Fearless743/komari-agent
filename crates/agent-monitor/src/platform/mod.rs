@@ -5,9 +5,12 @@
 //! fallback compiled on Linux means its API usage is checked by the normal test
 //! suite.
 
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(target_os = "linux")]
 use crate::error::MonitorError;
+#[cfg(target_os = "linux")]
 use crate::options::MonitorOptions;
 
 pub(crate) mod fallback;
@@ -16,6 +19,7 @@ pub(crate) mod fallback;
 ///
 /// In strict mode the collector returns empty values rather than substituting
 /// local system data, which keeps a broken `HOST_PROC` mount visible.
+#[cfg(target_os = "linux")]
 pub(crate) fn warn_proc_failure(options: &MonitorOptions, metric: &str, error: &MonitorError) {
     static WARNED: AtomicBool = AtomicBool::new(false);
     if WARNED.swap(true, Ordering::Relaxed) {
