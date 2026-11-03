@@ -78,8 +78,11 @@ let options = MonitorOptions::from_config(
 );
 ```
 
-本 crate **不会**自行读取进程环境变量。独立使用时可使用注入式查找（同时识别
-`HOST_PROC` 与 `HOST_SYS`）：
+本 crate 不会自行解析配置环境变量。唯一例外是 `pveversion` 的 `PATH` 查找：未注入
+`process_path` 时会读取进程 `PATH`。可通过 `with_process_path()` 或
+`from_env_lookup()`（读取 `PATH`）显式注入，避免依赖全局环境。
+
+独立使用时可使用注入式查找（识别 `HOST_PROC`、`HOST_SYS` 与 `PATH`）：
 
 ```rust
 let options = MonitorOptions::from_env_lookup(&|key| std::env::var(key).ok());
@@ -97,11 +100,21 @@ let options = MonitorOptions::default()
 `with_proc_root()` 与 `HOST_PROC` 一样会自动启用 `strict_proc`；若确实希望回退本机
 `sysinfo`，在其后调用 `.with_strict_proc(false)`。
 
-### A05 接线：HOST_SYS
+### A05 接线：HOST_SYS 与 PATH
 
 `agent-config` 目前只有 `host_proc` 字段。A05 接线时如果需要宿主机 sysfs（物理核心
-topology / DMI），必须自行读取 `HOST_SYS` 并调用 `with_sys_root()`；本 crate 不直接读
-全局环境变量。大多数容器中默认 `/sys` 已反映宿主机拓扑，未设置 `HOST_SYS` 时可保持默认。
+topology / DMI），必须自行读取 `HOST_SYS` 并调用 `with_sys_root()`；如需避免
+`pveversion` 的全局 `PATH` 回退，可读取 `PATH` 并调用 `with_process_path()`。本 crate
+除该 `PATH` 回退外不直接读取全局环境变量。大多数容器中默认 `/sys` 已反映宿主机拓扑，
+未设置 `HOST_SYS` 时可保持默认。
+
+### strict_proc 的边界
+
+`strict_proc` 只约束 **proc** 读取：`stat`、`meminfo`、`loadavg`、`uptime`、`cpuinfo`
+等失败时返回空值/未知值。`sys_root`（`HOST_SYS`）与 `root`（发行版标记）是独立注入
+项，不受 strict 影响，物理核心数/DMI 仍会从 `sys_root` 读取。因此 strict + 仅注入
+`proc` 时，CPU 名称可能是 `Unknown`，但物理核心数仍可能来自默认 `/sys` 或显式
+`sys_root`。
 
 ### strict_proc
 
@@ -143,14 +156,14 @@ strict 模式行为与之对齐，非 strict 模式则提供本机回退。
 
 1. `<sys_root>/devices/system/cpu/cpuN/topology/core_cpus_list`；
 2. `thread_siblings_list`（旧内核）；
-3. `/proc/cpuinfo` 的 `physical id` + `core id` 去重；
-4. `/proc/cpuinfo` 的 `physical id` + `cpu cores` 求和；
+3. `/proc/cpuinfo` 的 `physical id` + `cpu cores` 求和；
+4. `/proc/cpuinfo` 的 `physical id` + `core id` 去重；
 5. 仅按 `processor` 条目去重（ARM64/RISC-V/LoongArch 常见）。
 
-第 1-2 步与 gopsutil 一致；第 4 步对应 gopsutil 的 cpuinfo 回退。第 3、5 步是 Rust
-的安全兜底：gopsutil 在缺少 topology 且 cpuinfo 没有 `physical id` + `cpu cores` 时
-返回 `0`，本实现则分别返回去重后的核心数/逻辑核数。该差异已登记为
-[`docs/parity-deviations.md`](../../docs/parity-deviations.md) 的 D-004。
+第 1-3 步与 gopsutil 一致。第 4、5 步是 Rust 的安全兜底：gopsutil 在缺少 topology
+且 cpuinfo 没有 `physical id` + `cpu cores` 时返回 `0`，本实现则分别返回去重后的
+核心数/逻辑核数。该差异已登记为 [`docs/parity-deviations.md`](../../docs/parity-deviations.md)
+的 D-010。
 
 CPU 型号优先级对齐 gopsutil：`model name`/`Model Name`/`cpu`/`uarch`，然后
 `Processor`、`Hardware`、`Model`。

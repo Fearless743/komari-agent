@@ -56,7 +56,7 @@
 
 状态：**用户确认的有意差异**（A01 决策：保持 Rust 现状，只接受 `true`/`false`，不扩展解析器）。
 
-## D-004 CPU 物理核心数的安全兜底不同
+## D-010 CPU 物理核心数的安全兜底不同
 
 - **Go**：`cpu.Counts(false)` 只使用 sysfs topology，以及 `/proc/cpuinfo` 的
   `physical id` + `cpu cores`。两者都缺失时返回 `0`。
