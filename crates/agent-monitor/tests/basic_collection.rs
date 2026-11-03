@@ -313,6 +313,51 @@ fn sysfs_topology_drives_physical_cores() {
 }
 
 #[test]
+fn with_proc_root_enables_strict_unless_opted_out() {
+    let options = MonitorOptions::default().with_proc_root("/host/proc");
+    assert!(options.strict_proc);
+
+    let options = options.with_strict_proc(false);
+    assert!(!options.strict_proc);
+}
+
+#[test]
+fn strict_proc_with_stat_only_does_not_read_local_cpu_brand() {
+    let fixture = Fixture::empty();
+    fixture.write("stat", STAT);
+
+    let cpu = fixture.collector().collect_cpu();
+    assert_eq!(cpu.name, "Unknown");
+    assert_eq!(cpu.cores, 2);
+    assert_eq!(cpu.physical_cores, 0);
+    assert_eq!(cpu.usage, 0.0);
+}
+
+#[test]
+fn sysfs_thread_siblings_list_is_used_as_fallback() {
+    let fixture = Fixture::full();
+    let sys = TempDir::new().expect("sys temp dir");
+    let cpu_dir = sys.path().join("devices/system/cpu");
+
+    for (index, siblings) in [(0, "0-1"), (1, "0-1"), (2, "2"), (3, "3")] {
+        let topology = cpu_dir.join(format!("cpu{index}")).join("topology");
+        fs::create_dir_all(&topology).expect("create topology");
+        fs::write(
+            topology.join("thread_siblings_list"),
+            format!("{siblings}\n"),
+        )
+        .expect("write thread_siblings_list");
+    }
+
+    let options = fixture
+        .options()
+        .with_sys_root(sys.path())
+        .with_cpu_sample_interval(Duration::from_millis(1));
+    let cpu = Collector::new(options).collect_cpu();
+    assert_eq!(cpu.physical_cores, 3);
+}
+
+#[test]
 fn host_sys_env_lookup_is_injected() {
     let sys = TempDir::new().expect("sys temp dir");
     let sys_root = sys.path().to_string_lossy().into_owned();

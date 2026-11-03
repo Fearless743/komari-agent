@@ -23,7 +23,9 @@ pub(crate) fn collect(options: &MonitorOptions, last: &Mutex<Option<ProcStat>>) 
     collect_with(options, last, None)
 }
 
-/// Force a fresh two-sample measurement over `window`, ignoring the cache.
+/// Force a fresh two-sample measurement over `window`, bypassing the cached
+/// previous sample. The new sample is stored in the cache for later
+/// [`collect`] calls.
 pub(crate) fn sample(
     options: &MonitorOptions,
     last: &Mutex<Option<ProcStat>>,
@@ -82,11 +84,17 @@ fn sample_proc(
     let current = read_proc_stat(&options.proc_root)?;
     let usage = usage_between(&previous, &current);
 
-    let (mut name, cpuinfo_physical_cores) = read_cpu_info(&options.proc_root)
-        .map(|content| parse_cpuinfo(&content))
-        .unwrap_or((None, 0));
+    let (mut name, cpuinfo_physical_cores) = match read_cpu_info(&options.proc_root) {
+        Ok(content) => parse_cpuinfo(&content),
+        Err(error) => {
+            platform::warn_proc_failure(options, "cpuinfo", &error);
+            (None, 0)
+        }
+    };
 
-    if name.is_none() {
+    // Never read the local CPU brand in strict mode: the injected proc mount is
+    // authoritative and a missing cpuinfo must surface as Unknown.
+    if name.is_none() && !options.strict_proc {
         name = platform::fallback::cpu_brand();
     }
 
@@ -118,8 +126,9 @@ fn sample_proc(
 }
 
 #[cfg(target_os = "linux")]
-fn read_cpu_info(proc_root: &std::path::Path) -> Option<String> {
-    fs::read_to_string(proc_root.join("cpuinfo")).ok()
+fn read_cpu_info(proc_root: &std::path::Path) -> Result<String, crate::MonitorError> {
+    let path = proc_root.join("cpuinfo");
+    fs::read_to_string(&path).map_err(|source| crate::MonitorError::io(path, source))
 }
 
 /// Count physical cores from sysfs CPU topology.
@@ -165,12 +174,17 @@ fn sysfs_physical_cores(cpu_dir: &std::path::Path) -> Option<u32> {
 
 /// Extract the CPU model name and physical core count from `/proc/cpuinfo`.
 ///
-/// Physical core resolution follows gopsutil's fallback order:
+/// Physical core resolution:
 ///
 /// 1. unique `physical id` + `core id` pairs (x86 with or without SMT);
 /// 2. sum of `cpu cores` per `physical id` when `core id` is unavailable;
 /// 3. unique `processor` entries when the topology fields are absent (common on
 ///    ARM64/RISC-V/LoongArch).
+///
+/// gopsutil only implements the `physical id` + `cpu cores` step when sysfs is
+/// unavailable. Steps 1 and 3 are Rust safety fallbacks: Go reports 0 for ARM
+/// and containers without topology/cpuinfo fields, while this implementation
+/// reports the deduplicated processor count instead.
 ///
 /// The model name priority follows gopsutil: `model name` (or `Model Name`,
 /// `cpu`, `uarch`) first, then `Processor`, then `Hardware`, then `Model`.

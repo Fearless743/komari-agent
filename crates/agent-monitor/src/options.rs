@@ -112,8 +112,14 @@ impl MonitorOptions {
     }
 
     /// Override the proc filesystem root.
+    ///
+    /// Like `HOST_PROC`, an explicit custom proc root enables
+    /// [`MonitorOptions::strict_proc`] so an unreadable mount cannot silently
+    /// substitute local metrics. Call [`MonitorOptions::with_strict_proc`] with
+    /// `false` to opt back into the fallback.
     pub fn with_proc_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.proc_root = root.into();
+        self.strict_proc = true;
         self
     }
 
