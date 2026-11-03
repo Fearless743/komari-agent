@@ -42,7 +42,7 @@ pub use update::{
     DEFAULT_REPO, LatestRelease, RESTART_EXIT_CODE, UpdateAction, UpdateOptions, UpdateOutcome,
     Updater,
 };
-pub use version::{VersionError, need_update, parse_version};
+pub use version::{VersionError, need_update, parse_release_version, parse_version};
 
 /// Re-export of the SemVer type used across the crate.
 pub use semver::Version;

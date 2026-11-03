@@ -591,3 +591,26 @@ async fn no_release_or_matching_asset_is_up_to_date() {
 
     assert_unchanged(&target);
 }
+
+#[tokio::test]
+async fn release_tag_prefix_is_accepted_and_two_component_tags_are_skipped() {
+    let http = FakeHttp::new(vec![Reply::Response(
+        200,
+        release_json("release-2.3.4", &[("komari-agent-linux-amd64", 10, None)]),
+    )]);
+    let updater = Updater::new(options("1.0.0", None), http).unwrap();
+    assert_eq!(
+        updater.check_latest().await.unwrap().version.to_string(),
+        "2.3.4"
+    );
+
+    let http = FakeHttp::new(vec![Reply::Response(
+        200,
+        release_json("1.2", &[("komari-agent-linux-amd64", 10, None)]),
+    )]);
+    let updater = Updater::new(options("1.0.0", None), http).unwrap();
+    assert!(matches!(
+        updater.check_latest().await.unwrap_err(),
+        UpdateError::NoRelease { .. }
+    ));
+}

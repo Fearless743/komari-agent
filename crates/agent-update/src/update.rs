@@ -25,7 +25,7 @@ use crate::release::{Asset, GithubRelease, Platform, select_asset};
 use crate::replace::replace_file_atomically;
 use semver::Version;
 
-use crate::version::{need_update, parse_version};
+use crate::version::{need_update, parse_release_version, parse_version};
 
 /// Repository queried by default, matching the Go `update.Repo`.
 pub const DEFAULT_REPO: &str = "fearless743/komari-agent";
@@ -214,26 +214,26 @@ impl Updater {
             serde_json::from_slice(&response.body).map_err(UpdateError::InvalidJson)?;
 
         let platform = &self.options.platform;
-        let mut saw_release = false;
+        let mut saw_versioned_release = false;
         let mut best: Option<(Version, GithubRelease, Asset)> = None;
 
         for release in releases {
             if release.draft || release.prerelease {
                 continue;
             }
-            saw_release = true;
 
             if release.tag_name.trim().is_empty() {
                 continue;
             }
 
-            let version = match parse_version(&release.tag_name) {
+            let version = match parse_release_version(&release.tag_name) {
                 Ok(version) => version,
                 Err(err) => {
                     tracing::warn!(tag = %release.tag_name, %err, "skipping release with invalid version");
                     continue;
                 }
             };
+            saw_versioned_release = true;
 
             let Some(asset) = select_asset(&release.assets, platform).cloned() else {
                 continue;
@@ -249,7 +249,7 @@ impl Updater {
         }
 
         let Some((version, release, asset)) = best else {
-            if saw_release {
+            if saw_versioned_release {
                 return Err(UpdateError::NoAsset {
                     os: platform.os.clone(),
                     arch: platform.arch.clone(),

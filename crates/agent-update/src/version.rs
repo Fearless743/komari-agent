@@ -35,6 +35,11 @@ pub fn parse_version(input: &str) -> Result<Version, VersionError> {
     if components.iter().any(|component| component.is_empty()) {
         return Err(VersionError::Invalid(input.to_owned()));
     }
+    // Go's ParseTolerant rejects a short version that already carries
+    // pre-release/build metadata ("1.2-beta"), while padding plain "1.2".
+    if !suffix.is_empty() && components.len() < 3 {
+        return Err(VersionError::Invalid(input.to_owned()));
+    }
     while components.len() < 3 {
         components.push("0");
     }
@@ -45,6 +50,52 @@ pub fn parse_version(input: &str) -> Result<Version, VersionError> {
         value: input.to_owned(),
         source,
     })
+}
+
+/// Parse a GitHub release tag using the same rule as
+/// `go-github-selfupdate`'s `\d+\.\d+\.\d+` extraction.
+///
+/// The first three-component numeric version is taken from the tag, so arbitrary
+/// prefixes such as `release-1.2.3` are accepted. Unlike [`parse_version`],
+/// a two-component tag (`1.2`) is rejected, matching Go's release detection.
+pub fn parse_release_version(input: &str) -> Result<Version, VersionError> {
+    let bytes = input.as_bytes();
+
+    for start in 0..bytes.len() {
+        if !bytes[start].is_ascii_digit() {
+            continue;
+        }
+
+        let mut position = start;
+        let mut groups = 0;
+
+        loop {
+            let digits_start = position;
+            while position < bytes.len() && bytes[position].is_ascii_digit() {
+                position += 1;
+            }
+            if position == digits_start {
+                break;
+            }
+            groups += 1;
+
+            if groups == 3 {
+                let candidate = &input[start..];
+                return Version::parse(candidate).map_err(|source| VersionError::Semver {
+                    value: candidate.to_owned(),
+                    source,
+                });
+            }
+
+            if position < bytes.len() && bytes[position] == b'.' {
+                position += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    Err(VersionError::Invalid(input.to_owned()))
 }
 
 /// Whether `latest` is newer than `current`.
@@ -85,7 +136,6 @@ mod tests {
             ("  v2.0.0  ", "2.0.0"),
             ("1", "1.0.0"),
             ("1.2", "1.2.0"),
-            ("v1.2-beta", "1.2.0-beta"),
         ];
 
         for (input, expected) in cases {
@@ -93,8 +143,34 @@ mod tests {
             assert_eq!(parsed.to_string(), expected, "{input}");
         }
 
-        for input in ["", "invalid", "1.2.3.4", "v", "01.2.3"] {
+        for input in ["", "invalid", "1.2.3.4", "v", "01.2.3", "1.2-beta"] {
             assert!(parse_version(input).is_err(), "{input} should fail");
+        }
+    }
+
+    #[test]
+    fn release_tags_follow_go_regex_extraction() {
+        let cases = [
+            ("v1.2.3", "1.2.3"),
+            ("release-1.2.3", "1.2.3"),
+            ("foo/bar1.2.3", "1.2.3"),
+            ("release-1.2.3-beta.1", "1.2.3-beta.1"),
+            ("1.2.3+build.5", "1.2.3+build.5"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                parse_release_version(input).unwrap().to_string(),
+                expected,
+                "{input}"
+            );
+        }
+
+        for input in ["1.2", "1", "1.2.3.4", "release-1.2", "v", "invalid"] {
+            assert!(
+                parse_release_version(input).is_err(),
+                "{input} should be rejected"
+            );
         }
     }
 
