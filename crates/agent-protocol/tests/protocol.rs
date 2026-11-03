@@ -197,6 +197,33 @@ fn report_v1_decodes_gpu_models_fallback_go_golden() {
 }
 
 #[test]
+fn report_v1_keeps_explicit_zero_average_usage() {
+    let golden = r#"{"gpu":{"count":0,"average_usage":0,"detailed_info":[]}}"#;
+    let report = decode_v1::<ReportV1>(golden).unwrap();
+    let gpu = report.gpu.as_ref().expect("gpu present");
+    assert_eq!(gpu.count, Some(0));
+    assert_eq!(
+        gpu.average_usage,
+        Some(0.0),
+        "an explicit zero must not be mistaken for a missing field"
+    );
+    assert_eq!(gpu.detailed_info, Some(Vec::new()));
+    assert_eq!(gpu.models, None);
+
+    let encoded = report.to_json().unwrap();
+    let value = as_value(&encoded);
+    let gpu_json = value["gpu"].as_object().expect("gpu object");
+    assert!(
+        gpu_json.contains_key("average_usage"),
+        "average_usage: 0 must survive re-serialization"
+    );
+    assert_eq!(gpu_json["average_usage"].as_f64(), Some(0.0));
+    assert_eq!(gpu_json["count"], json!(0));
+    assert_eq!(gpu_json["detailed_info"], json!([]));
+    assert!(!gpu_json.contains_key("models"));
+}
+
+#[test]
 fn report_v1_preserves_nested_unknown_fields() {
     let golden = r#"{"cpu":{"usage":1.5,"vendor":"AuthenticAMD","flags":["sse4_2"]},"ram":{"total":123,"used":1,"hugepages":2},"swap":{"total":0,"used":0,"zram":true},"load":{"load1":0.1,"load5":0.2,"load15":0.3,"runnable":5},"disk":{"total":10,"used":5,"inodes":100},"network":{"up":1,"down":2,"totalUp":3,"totalDown":4,"iface":"eth0"},"connections":{"tcp":1,"udp":2,"unix":3},"gpu":{"count":1,"average_usage":37.5,"detailed_info":[{"name":"gpu","memory_total":1,"memory_used":0,"utilization":35.5,"temperature":0,"pci":"0000:01:00.0"}],"driver":"nvidia"},"custom_section":{"x":1},"uptime":0,"process":0,"message":""}"#;
     let report = decode_v1::<ReportV1>(golden).unwrap();
