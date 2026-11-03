@@ -5,14 +5,20 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Auto discovery support for the Komari agent"
+description = "Auto discovery and DNS support for the Komari agent"
 
 [dependencies]
-anyhow.workspace = true
-dirs.workspace = true
+async-trait.workspace = true
+hostname = "0.4"
+idna = "1"
+if-addrs = "0.15"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-uuid.workspace = true
+url = "2"
+
+[dev-dependencies]
+tempfile.workspace = true
