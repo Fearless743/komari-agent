@@ -282,12 +282,16 @@ fn parse_soc_model(driver: &str, raw: &[u8]) -> Option<String> {
 
     if driver == "panfrost" || driver == "lima" || lower.contains("mali") {
         if let Some(model) = token_after(&lower, "mali-").or_else(|| token_after(&lower, "mali_")) {
-            let model: String = model
-                .chars()
-                .take_while(|ch| ch.is_ascii_alphanumeric())
-                .collect();
-            if !model.is_empty() {
-                return Some(format!("ARM Mali {}", model.to_ascii_uppercase()));
+            // Go's regex is `mali[-_]([a-z]\d+)`: a letter followed by digits.
+            // "mali-450" therefore falls back to the generic name.
+            let mut chars = model.chars();
+            if let Some(first) = chars.next()
+                && first.is_ascii_alphabetic()
+            {
+                let digits: String = chars.take_while(char::is_ascii_digit).collect();
+                if !digits.is_empty() {
+                    return Some(format!("ARM Mali {}{digits}", first.to_ascii_uppercase()));
+                }
             }
         }
         return Some("ARM Mali".to_owned());
@@ -413,6 +417,10 @@ mod tests {
         assert_eq!(
             parse_soc_model("panfrost", b"rockchip,rk3588-mali\0arm,mali-g610").as_deref(),
             Some("ARM Mali G610")
+        );
+        assert_eq!(
+            parse_soc_model("panfrost", b"arm,mali-450").as_deref(),
+            Some("ARM Mali")
         );
         assert_eq!(
             parse_soc_model("vc4-drm", b"brcm,bcm2711-vc5").as_deref(),
