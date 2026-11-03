@@ -20,9 +20,10 @@ fn missing_config_file_prints_an_error_even_with_logging_disabled() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("failed to read config file"),
-        "stderr did not contain the error: {stderr}"
+    assert_eq!(
+        stderr.matches("failed to read config file").count(),
+        1,
+        "the error must be printed exactly once: {stderr}"
     );
 }
 
@@ -36,9 +37,10 @@ fn invalid_prefer_ip_version_exits_with_an_error() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("invalid --prefer-ip-version value"),
-        "stderr did not contain the error: {stderr}"
+    assert_eq!(
+        stderr.matches("invalid --prefer-ip-version value").count(),
+        1,
+        "the error must be printed exactly once: {stderr}"
     );
 }
 

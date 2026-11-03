@@ -49,10 +49,8 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            tracing::error!("{error}");
-            // Always surface fatal errors on stderr, even when logging is
-            // disabled via `RUST_LOG=off`. The Go agent's `log` output is not
-            // suppressible either.
+            // Fatal errors go straight to stderr so they stay visible even
+            // with `RUST_LOG=off`, mirroring the Go agent's single log line.
             eprintln!("Error: {error}");
             ExitCode::FAILURE
         }
