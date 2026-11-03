@@ -21,6 +21,11 @@ use clap::Parser;
 struct Cli {
     #[command(flatten)]
     config: CliOverrides,
+
+    /// Positional arguments are accepted and ignored, like the Go root
+    /// command, which declares no positional validators.
+    #[arg(value_name = "ARGS", hide = true)]
+    _ignored: Vec<String>,
 }
 
 fn main() -> ExitCode {

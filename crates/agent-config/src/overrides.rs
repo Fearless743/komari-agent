@@ -46,6 +46,7 @@ pub struct CliOverrides {
 
     #[arg(
         long = "interval",
+        allow_negative_numbers = true,
         short = 'i',
         value_name = "SECONDS",
         help = "Interval in seconds"
@@ -64,6 +65,7 @@ pub struct CliOverrides {
 
     #[arg(
         long = "max-retries",
+        allow_negative_numbers = true,
         short = 'r',
         value_name = "COUNT",
         help = "Maximum number of retries"
@@ -72,6 +74,7 @@ pub struct CliOverrides {
 
     #[arg(
         long = "reconnect-interval",
+        allow_negative_numbers = true,
         short = 'c',
         value_name = "SECONDS",
         help = "Reconnect interval in seconds"
@@ -80,6 +83,7 @@ pub struct CliOverrides {
 
     #[arg(
         long = "info-report-interval",
+        allow_negative_numbers = true,
         value_name = "MINUTES",
         help = "Interval in minutes for reporting basic info"
     )]
@@ -108,6 +112,7 @@ pub struct CliOverrides {
 
     #[arg(
         long = "month-rotate",
+        allow_negative_numbers = true,
         value_name = "DAY",
         help = "Month reset for network statistics (0 to disable)"
     )]
@@ -197,6 +202,7 @@ pub struct CliOverrides {
 
     #[arg(
         long = "protocol-version",
+        allow_negative_numbers = true,
         value_name = "VERSION",
         help = "Report protocol version (1 or 2)"
     )]

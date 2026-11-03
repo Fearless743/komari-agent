@@ -68,3 +68,23 @@ fn valid_flags_load_configuration_and_exit_successfully() {
     assert!(!stderr.contains("token: \"secret\""), "stderr: {stderr}");
     assert!(stderr.contains("******"));
 }
+
+#[test]
+fn positional_arguments_are_ignored_like_go() {
+    let output = agent()
+        .args(["some-positional", "another", "--interval", "2.5"])
+        .output()
+        .expect("run komari-agent");
+
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn negative_numbers_are_accepted() {
+    let output = agent()
+        .args(["--interval", "-1", "--max-retries", "-1"])
+        .output()
+        .expect("run komari-agent");
+
+    assert_eq!(output.status.code(), Some(0));
+}
