@@ -44,6 +44,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -79,7 +80,6 @@ name = "agent-protocol"
 version = "0.0.1"
 dependencies = [
  "bytes",
- "flate2",
  "serde",
  "serde_json",
  "thiserror",

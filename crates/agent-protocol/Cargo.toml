@@ -9,7 +9,6 @@ description = "Wire protocol types for the Komari agent"
 
 [dependencies]
 bytes.workspace = true
-flate2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

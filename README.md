@@ -3,7 +3,9 @@
 Komari Agent 的 Rust 增量重写版本。目标是与 [`../komari-agent`](../komari-agent)（Go 实现）达到
 100% 功能对等；在完成对等验证之前，Go 版本保留作为回退实现。
 
-当前阶段只包含 **workspace 骨架、CLI、配置加载、日志与版本信息**，尚未实现采集、协议与网络逻辑。
+当前阶段包含 **workspace 骨架、CLI、配置加载、日志与协议 v1 模型**；采集与网络逻辑仍由后续任务实现。
+协议 v2 已按用户确认裁剪（后端无 `/api/clients/v2/rpc` 路由），详见
+[`crates/agent-protocol/README.md`](crates/agent-protocol/README.md)。
 
 ## 目录结构
 
@@ -13,7 +15,7 @@ crates/
   agent-cli/               # 唯一可执行 crate，二进制名 komari-agent
   agent-config/            # 配置结构、默认值、环境变量、JSON 文件与 CLI 覆盖
   agent-monitor/           # 系统指标采集（后续任务）
-  agent-protocol/          # 上报协议 v1/v2（后续任务）
+  agent-protocol/          # 上报协议 v1（仅 v1，v2 已按确认裁剪）
   agent-client/            # HTTP / WebSocket 传输（后续任务）
   agent-discovery/         # 自动发现（后续任务）
   agent-update/            # 自动更新（后续任务）
@@ -85,7 +87,7 @@ JSON 中未出现的键不会覆盖更高优先级的值。
   "max_retries": 3,
   "reconnect_interval": 5,
   "info_report_interval": 5,
-  "protocol_version": 2
+  "protocol_version": 1
 }
 ```
 
@@ -115,5 +117,8 @@ AGENT_TOKEN=your-token AGENT_ENDPOINT=https://panel.example.com ./komari-agent
   - 等号后的取值只接受小写 `true`/`false`，`--flag=1`、`--flag=TRUE`、`--flag=t` 等会以退出码 `2`
     报错（环境变量仍遵循 Go 的 `true`/`1` 语义）。该差异已登记在
     [`docs/parity-deviations.md`](docs/parity-deviations.md)（D-003）。
+- **协议版本仅支持 v1**：v2 已按用户确认裁剪（后端无 `/api/clients/v2/rpc` 路由）。
+  `protocol_version` 默认 `1`；显式传入 `2` 或更大值会被降级为 `1` 并打印 warning。
+  该差异已登记为 D-004。
 - `--autoUpdate` 与 `--memory-mode-available` 已弃用，仍会被接受并打印警告后忽略。
 - `check-mem`、`list-disk` 子命令依赖采集实现，将在后续任务中补齐。
