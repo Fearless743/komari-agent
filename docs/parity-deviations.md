@@ -120,7 +120,7 @@ workflow 只上传裸二进制 `komari-agent-{os}-{arch}[.exe]`，因此正常�
 影响：使用自建镜像发布压缩包或非规范文件名的部署无法自动更新，需要改为上传裸二进制
 或手工更新。状态：有意的安全收紧。
 
-## D-010 `PreferIp::Auto` 在非 Unix 平台使用近似接口状态
+## D-011 `PreferIp::Auto` 在非 Unix 平台使用近似接口状态
 
 - **Unix（Linux/macOS/FreeBSD 等）**：直接用 `getifaddrs` 检查 `IFF_UP`，跳过
   `IFF_LOOPBACK` 和回环地址，与 Go `preferIPv4First` 的 `net.FlagUp` 语义一致；
