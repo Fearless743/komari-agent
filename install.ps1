@@ -101,7 +101,8 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     elseif ($arg -eq '--install-dir' -or $arg -eq '--install-service-name' -or
         $arg -eq '--service' -or $arg -eq '--install-ghproxy' -or
         $arg -eq '--install-version' -or $arg -eq '--endpoint' -or
-        $arg -eq '--token' -or $arg -eq '--interval' -or $arg -eq '--config') {
+        $arg -eq '--token' -or $arg -eq '--interval' -or $arg -eq '--config' -or
+        $arg -eq '-e' -or $arg -eq '-t' -or $arg -eq '-i') {
         if ($i + 1 -ge $args.Count) {
             Fail "Option $arg requires a value"
         }
@@ -116,6 +117,9 @@ for ($i = 0; $i -lt $args.Count; $i++) {
             '--endpoint' { $Endpoint = $value }
             '--token' { $Token = $value }
             '--interval' { $Interval = $value }
+            '-e' { $Endpoint = $value }
+            '-t' { $Token = $value }
+            '-i' { $Interval = $value }
             '--config' { $ConfigPath = $value; $ConfigExplicit = $true }
         }
     }
@@ -132,16 +136,34 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     else { $AgentArgs += $arg }
 }
 
+if (-not $InstallDir) {
+    Fail 'Install directory must not be empty.'
+}
+if (-not [System.IO.Path]::IsPathRooted($InstallDir)) {
+    Fail "Install directory must be an absolute path: $InstallDir"
+}
+
 if (-not $ConfigPath) {
     $ConfigPath = Join-Path $InstallDir 'config.json'
+}
+elseif (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
+    $ConfigPath = Join-Path $InstallDir $ConfigPath
 }
 
 if ($ServiceName -notmatch '^[A-Za-z0-9_.@-]+$') {
     Fail "Invalid service name: $ServiceName (allowed: letters, digits, . _ @ -)"
 }
 
+if ($Purge -and -not $Uninstall) {
+    Write-WarningLog '--purge has no effect without --uninstall'
+}
+
 if ($Interval -ne '' -and $Interval -notmatch '^-?[0-9]+(\.[0-9]+)?$') {
     Fail "Invalid --interval value: $Interval (expected a number of seconds)"
+}
+
+if ($ConfigExplicit -and ($Endpoint -or $Token -or $Interval)) {
+    Write-WarningLog '--config was provided; --endpoint/--token/--interval are not written to it'
 }
 
 $AgentPath = Join-Path $InstallDir 'komari-agent.exe'

@@ -93,6 +93,14 @@ command -v cargo >/dev/null 2>&1 || {
     exit 1
 }
 
+case "$BUILD_TOOL" in
+    auto | cargo | zigbuild | cross) ;;
+    *)
+        printf 'Unknown KOMARI_BUILD_TOOL: %s (expected auto, cargo, zigbuild or cross)\n' "$BUILD_TOOL" >&2
+        exit 2
+        ;;
+esac
+
 mkdir -p "$BUILD_DIR"
 
 VERSION="${KOMARI_AGENT_VERSION:-}"

@@ -9,7 +9,7 @@ WORKDIR /src
 
 # aws-lc-sys (pulled in by rustls) builds C code through CMake.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends cmake \
+    && apt-get install -y --no-install-recommends cmake perl \
     && rm -rf /var/lib/apt/lists/*
 
 # Version metadata is injected at compile time by crates/agent-cli/src/lib.rs.

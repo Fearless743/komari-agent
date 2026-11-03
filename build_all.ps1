@@ -76,6 +76,11 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
+if ($BuildTool -notin @('auto', 'cargo', 'zigbuild', 'cross')) {
+    Write-Host "Unknown KOMARI_BUILD_TOOL: $BuildTool (expected auto, cargo, zigbuild or cross)" -ForegroundColor Red
+    exit 2
+}
+
 New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 
 $version = $env:KOMARI_AGENT_VERSION

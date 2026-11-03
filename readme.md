@@ -81,7 +81,7 @@ Unix 与 Windows 脚本使用同一套选项：
 | `--service NAME` | `--install-service-name` 的别名 |
 | `--install-ghproxy URL` | GitHub 代理前缀，例如 `https://ghproxy.net` |
 | `--install-version VERSION` | 指定 Release tag，例如 `v0.2.0`；默认最新版 |
-| `--config FILE` | 使用已有配置文件，不再生成 `<安装目录>/config.json` |
+| `--config FILE` | 使用已有配置文件，不再生成或改写 `<安装目录>/config.json`；此时 `--endpoint/--token/--interval` 会被忽略并告警 |
 | `--uninstall` | 停止并删除服务与二进制 |
 | `--purge` | 与 `--uninstall` 一起使用时，同时删除 `config.json` 与 `auto-discovery.json` |
 | `--dry-run` | 只打印计划，不修改系统 |
@@ -165,7 +165,7 @@ AGENT_TOKEN=your-token AGENT_ENDPOINT=https://panel.example.com ./komari-agent
 | `get_ip_addr_from_nic` | `AGENT_GET_IP_ADDR_FROM_NIC` | `false` | 从网卡获取 IP |
 | `host_proc` | `HOST_PROC` | `""` | `/proc` 根目录；无对应 CLI 参数 |
 | `protocol_version` | `AGENT_PROTOCOL_VERSION` | `1` | 仅支持 v1；`>=2` 会降级并告警 |
-| `disable_compression` | `AGENT_DISABLE_COMPRESSION` | `false` | 关闭 WebSocket 压缩（v2 gzip 未实现） |
+| `disable_compression` | `AGENT_DISABLE_COMPRESSION` | `false` | 兼容保留；v1 从不压缩 WebSocket 帧（D-021） |
 | `prefer_ip_version` | `AGENT_PREFER_IP_VERSION` | `""` | `4` 或 `6`，空为自动 |
 
 配置文件路径也可通过 `AGENT_CONFIG_FILE` 指定。完整 CLI 参数见 `komari-agent --help`，

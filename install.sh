@@ -351,6 +351,11 @@ parse_args() {
     if [ "$PURGE" = true ] && [ "$UNINSTALL" = false ]; then
         log_warning "--purge has no effect without --uninstall"
     fi
+
+    if [ "$CONFIG_EXPLICIT" = true ] &&
+        { [ -n "$ENDPOINT" ] || [ -n "$TOKEN" ] || [ -n "$INTERVAL" ]; }; then
+        log_warning "--config was provided; --endpoint/--token/--interval are not written to it"
+    fi
 }
 
 check_root() {
