@@ -195,6 +195,7 @@ async fn registers_successfully_and_saves_credentials() {
     assert!(result.registered);
     assert_eq!(result.config.uuid, "uuid-1");
     assert_eq!(result.config.token, "token-1");
+    assert_eq!(result.endpoint, format!("http://{address}"));
 
     let saved: serde_json::Value =
         serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
@@ -254,6 +255,7 @@ async fn reuses_existing_config_without_network_access() {
 
     let result = discovery.handle().await.unwrap();
     assert!(!result.registered);
+    assert_eq!(result.endpoint, "http://127.0.0.1:1");
     assert_eq!(result.config.uuid, "existing-uuid");
     assert_eq!(result.config.token, "existing-token");
 }

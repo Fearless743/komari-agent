@@ -4,7 +4,8 @@ Komari Agent 的 Rust 增量重写版本。目标是与 [`../komari-agent`](../k
 100% 功能对等；在完成对等验证之前，Go 版本保留作为回退实现。
 
 当前阶段已包含 **workspace 骨架、CLI、配置加载、日志与版本信息、DNS/自动发现、自动更新**；
-采集、协议与 WebSocket 传输仍在后续任务中。
+采集、协议与 WebSocket 传输仍在后续任务中。`agent-discovery` 与 `agent-update` 两个 crate
+已实现并通过独立测试，尚未接入 CLI 主循环。
 
 ## 目录结构
 

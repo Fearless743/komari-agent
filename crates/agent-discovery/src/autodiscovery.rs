@@ -41,6 +41,8 @@ pub struct AutoDiscoveryConfig {
 /// Result of [`AutoDiscovery::handle`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscoveryResult {
+    /// Panel endpoint that should be used with these credentials.
+    pub endpoint: String,
     pub config: AutoDiscoveryConfig,
     /// `true` when a new registration was performed, `false` when an existing
     /// file was reused.
@@ -296,6 +298,11 @@ impl AutoDiscovery {
         &self.resolver
     }
 
+    /// Panel endpoint used for registration and by the caller afterwards.
+    pub fn endpoint(&self) -> &str {
+        &self.options.endpoint
+    }
+
     /// Path used for `auto-discovery.json`.
     pub fn config_path(&self) -> &Path {
         &self.config_path
@@ -349,6 +356,7 @@ impl AutoDiscovery {
             Ok(Some(config)) => {
                 tracing::info!(uuid = %config.uuid, "using existing auto-discovery token");
                 Ok(DiscoveryResult {
+                    endpoint: self.options.endpoint.clone(),
                     config,
                     registered: false,
                 })
@@ -357,6 +365,7 @@ impl AutoDiscovery {
                 tracing::info!("auto-discovery config not found, registering with server");
                 let config = self.register().await?;
                 Ok(DiscoveryResult {
+                    endpoint: self.options.endpoint.clone(),
                     config,
                     registered: true,
                 })
@@ -368,6 +377,7 @@ impl AutoDiscovery {
                 tracing::warn!(%err, "failed to load auto-discovery config; registering again");
                 let config = self.register().await?;
                 Ok(DiscoveryResult {
+                    endpoint: self.options.endpoint.clone(),
                     config,
                     registered: true,
                 })

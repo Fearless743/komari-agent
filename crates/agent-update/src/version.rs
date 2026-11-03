@@ -13,12 +13,14 @@ use thiserror::Error;
 /// Tolerant forms such as `1`, `1.2` and `v1.2.3-beta.1` are accepted. Build
 /// metadata is preserved but, as required by SemVer, does not affect ordering.
 pub fn parse_version(input: &str) -> Result<Version, VersionError> {
-    let value = input.trim();
-    let value = value
-        .strip_prefix('v')
-        .or_else(|| value.strip_prefix('V'))
-        .unwrap_or(value)
-        .trim();
+    let mut value = input.trim();
+    if let Some(stripped) = value.strip_prefix('v') {
+        value = stripped;
+    }
+    if let Some(stripped) = value.strip_prefix('V') {
+        value = stripped;
+    }
+    let value = value.trim();
 
     if value.is_empty() {
         return Err(VersionError::Invalid(input.to_owned()));
@@ -76,6 +78,7 @@ mod tests {
         let cases = [
             ("v1.2.3", "1.2.3"),
             ("V1.2.3", "1.2.3"),
+            ("vV1.2.3", "1.2.3"),
             ("1.2.3-beta.1", "1.2.3-beta.1"),
             ("v1.2.3+meta", "1.2.3+meta"),
             ("1.2.3-pre.1+build.123", "1.2.3-pre.1+build.123"),
