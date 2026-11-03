@@ -122,6 +122,22 @@ workflow 只上传裸二进制 `komari-agent-{os}-{arch}[.exe]`，因此正常�
 影响：使用自建镜像发布压缩包或非规范文件名的部署无法自动更新，需要改为上传裸二进制
 或手工更新。状态：有意的安全收紧。
 
+## D-010 CPU 物理核心数的安全兜底不同
+
+- **Go**：`cpu.Counts(false)` 只使用 sysfs topology，以及 `/proc/cpuinfo` 的
+  `physical id` + `cpu cores`。两者都缺失时返回 `0`。
+- **Rust**：在相同两步之后，还会依次尝试：
+  1. `/proc/cpuinfo` 的 `physical id` + `core id` 去重；
+  2. 仅按 `processor` 条目去重（ARM64/RISC-V/LoongArch 等常见）。
+
+原因：避免 ARM/精简容器把物理核心数固定上报为 `0`，让基础信息更有参考价值。
+
+影响：在缺少 topology 且 cpuinfo 无 `physical id` + `cpu cores` 的环境中，Go 上报
+`cpu_physical_cores = 0`，Rust 上报去重后的核心数（通常等于逻辑核数）。依赖
+`0 = 未知` 语义的消费方需要区分该差异。
+
+状态：有意差异，待对等验收确认。
+
 ## D-011 `PreferIp::Auto` 在非 Unix 平台使用近似接口状态
 
 - **Unix（Linux/macOS/FreeBSD 等）**：直接用 `getifaddrs` 检查 `IFF_UP`，跳过

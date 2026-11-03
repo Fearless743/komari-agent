@@ -3,9 +3,10 @@
 Komari Agent 的 Rust 增量重写版本。目标是与 [`../komari-agent`](../komari-agent)（Go 实现）达到
 100% 功能对等；在完成对等验证之前，Go 版本保留作为回退实现。
 
-当前阶段已包含 **workspace 骨架、CLI、配置加载、日志与版本信息、协议 v1 模型、DNS/自动发现、自动更新**；
-采集与 WebSocket 传输仍在后续任务中。`agent-discovery` 与 `agent-update` 两个 crate 已实现并通过独立测试，
-尚未接入 CLI 主循环。
+当前阶段已包含 **workspace 骨架、CLI、配置加载、日志与版本信息、基础系统采集、
+协议 v1 模型、DNS/自动发现、自动更新**。基础采集覆盖 CPU、内存、Swap、负载、OS、
+uptime 与虚拟化；磁盘/网络/GPU 与 WebSocket 传输仍在后续任务中。
+`agent-discovery` 与 `agent-update` 两个 crate 已实现并通过独立测试，尚未接入 CLI 主循环。
 协议 v2 已按用户确认裁剪（后端无 `/api/clients/v2/rpc` 路由），详见
 [`crates/agent-protocol/README.md`](crates/agent-protocol/README.md)。
 
@@ -16,7 +17,7 @@ Cargo.toml                 # workspace（edition 2024 / resolver 3）+ 统一依
 crates/
   agent-cli/               # 唯一可执行 crate，二进制名 komari-agent
   agent-config/            # 配置结构、默认值、环境变量、JSON 文件与 CLI 覆盖
-  agent-monitor/           # 系统指标采集（后续任务）
+  agent-monitor/           # 基础系统采集（CPU/内存/负载/OS/uptime/虚拟化）
   agent-protocol/          # 上报协议 v1（仅 v1，v2 已按确认裁剪）
   agent-client/            # HTTP / WebSocket 传输（后续任务）
   agent-discovery/         # 自定义 DNS 解析与自动发现注册
@@ -52,6 +53,18 @@ cargo clippy -p agent-discovery -p agent-update --all-targets -- -D warnings
 cargo build --release
 # 产物：target/release/komari-agent
 ```
+
+## 基础系统采集
+
+`agent-monitor` 已实现 CPU、内存、Swap、负载、OS、uptime 与虚拟化的基础采集：
+
+- 所有 `/proc` 读取支持 `HOST_PROC` 注入；`HOST_SYS` 可注入 sysfs topology/DMI；
+  未设置 `HOST_PROC` 时的本机回退与 `strict_proc` 行为见 crate README。
+- 周期上报使用 `Collector::collect_report_metrics()`（不探测 OS/虚拟化），
+  基础信息使用 `collect_basic_info()`；`collect()` 仅用于诊断。
+- 磁盘、网络与 GPU 采集由 A03 负责，尚未实现。
+
+详见 [`crates/agent-monitor/README.md`](crates/agent-monitor/README.md)。
 
 ## 版本信息
 
