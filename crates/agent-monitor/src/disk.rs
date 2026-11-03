@@ -60,6 +60,38 @@ pub fn parse_mounts(content: &str) -> Vec<PartitionStat> {
         .collect()
 }
 
+/// Parse a `/proc/1/mountinfo` table.
+///
+/// Fields are `id parent major:minor root mountpoint opts [optional...] - fstype source superopts`;
+/// optional fields can contain escaped spaces but never a literal `-`.
+pub fn parse_mountinfo(content: &str) -> Vec<PartitionStat> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let separator = fields.iter().position(|field| *field == "-")?;
+            if separator < 6 || separator + 2 >= fields.len() {
+                return None;
+            }
+
+            let mountpoint = unescape_mount_field(fields[4]);
+            let opts = fields[5].split(',').map(str::to_owned).collect::<Vec<_>>();
+            let fstype = unescape_mount_field(fields[separator + 1]);
+            let device = unescape_mount_field(fields[separator + 2]);
+            if mountpoint.is_empty() {
+                return None;
+            }
+
+            Some(PartitionStat {
+                device,
+                mountpoint,
+                fstype,
+                opts,
+            })
+        })
+        .collect()
+}
+
 fn unescape_mount_field(field: &str) -> String {
     if !field.contains('\\') {
         return field.to_owned();
@@ -227,9 +259,16 @@ pub(crate) fn collect(options: &MonitorOptions) -> DiskInfo {
 
     #[cfg(target_os = "linux")]
     {
-        // An explicit include list does not need the mount table at all: Go
-        // reads each listed path directly and skips unreadable entries.
-        if !included.is_empty() {
+        // Go calls disk.Partitions first: when the mount table cannot be read
+        // the whole collection (including the explicit include list) is zero.
+        let Some(parts) = read_linux_mounts(options) else {
+            return DiskInfo::default();
+        };
+
+        // The branch is selected by the *raw* configuration string, matching
+        // Go's `flags.IncludeMountpoints != ""`. A value such as " " or ";"
+        // therefore enters the include branch and sums nothing.
+        if !options.include_mountpoints.is_empty() {
             let usages: Vec<DiskUsage> = included
                 .iter()
                 .filter_map(|mountpoint| usage_for_path(Path::new(mountpoint)))
@@ -237,19 +276,11 @@ pub(crate) fn collect(options: &MonitorOptions) -> DiskInfo {
             return sum_included_usage(&usages);
         }
 
-        let mounts = read_linux_mounts(options);
-        let Some((parts, usage_source)) = mounts else {
-            return DiskInfo::default();
-        };
-
         let entries: Vec<(PartitionStat, DiskUsage)> = parts
             .into_iter()
             .filter(is_physical_disk)
             .filter_map(|part| {
-                let usage = match &usage_source {
-                    UsageSource::Statvfs => usage_for_path(Path::new(&part.mountpoint))?,
-                    UsageSource::Precomputed(map) => *map.get(&part.mountpoint)?,
-                };
+                let usage = usage_for_path(Path::new(&part.mountpoint))?;
                 Some((part, usage))
             })
             .collect();
@@ -259,7 +290,7 @@ pub(crate) fn collect(options: &MonitorOptions) -> DiskInfo {
     #[cfg(not(target_os = "linux"))]
     {
         let parts = crate::platform::fallback::disk_partitions();
-        if !included.is_empty() {
+        if !options.include_mountpoints.is_empty() {
             let usages: Vec<DiskUsage> = included
                 .iter()
                 .filter_map(|mountpoint| {
@@ -283,35 +314,26 @@ pub(crate) fn collect(options: &MonitorOptions) -> DiskInfo {
 }
 
 #[cfg(target_os = "linux")]
-enum UsageSource {
-    Statvfs,
-    Precomputed(BTreeMap<String, DiskUsage>),
-}
+fn read_linux_mounts(options: &MonitorOptions) -> Option<Vec<PartitionStat>> {
+    // gopsutil reads /proc/1/mountinfo first, then falls back to /proc/mounts.
+    let mountinfo = options.proc_path("1/mountinfo");
+    if let Ok(content) = std::fs::read_to_string(&mountinfo) {
+        let parts = parse_mountinfo(&content);
+        if !parts.is_empty() {
+            return Some(parts);
+        }
+    }
 
-#[cfg(target_os = "linux")]
-fn read_linux_mounts(options: &MonitorOptions) -> Option<(Vec<PartitionStat>, UsageSource)> {
     for relative in ["mounts", "self/mounts"] {
         let path = options.proc_path(relative);
         if let Ok(content) = std::fs::read_to_string(&path) {
             let parts = parse_mounts(&content);
             if !parts.is_empty() {
-                return Some((parts, UsageSource::Statvfs));
+                return Some(parts);
             }
         }
     }
-
-    if options.strict_proc {
-        return None;
-    }
-
-    // Local fallback: sysinfo already carries usage for each mount point.
-    let parts = crate::platform::fallback::disk_partitions();
-    let usage: BTreeMap<String, DiskUsage> = parts
-        .iter()
-        .map(|(part, usage)| (part.mountpoint.clone(), *usage))
-        .collect();
-    let parts = parts.into_iter().map(|(part, _)| part).collect();
-    Some((parts, UsageSource::Precomputed(usage)))
+    None
 }
 
 /// Read usage for one path.
@@ -375,6 +397,22 @@ tmpfs /run tmpfs rw,nosuid 0 0
         assert_eq!(parts.len(), 3);
         assert_eq!(parts[1].mountpoint, "/mnt/with space");
         assert_eq!(parts[1].opts, vec!["rw", "noatime"]);
+    }
+
+    #[test]
+    fn parses_mountinfo_with_device_after_separator() {
+        let content = "\
+36 29 0:32 / /sys rw,nosuid,nodev shared:3 - sysfs sysfs rw
+37 29 8:1 / /mnt/with\\040space ext4 rw,relatime shared:7 - ext4 /dev/sda1 rw
+";
+        let parts = parse_mountinfo(content);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].mountpoint, "/sys");
+        assert_eq!(parts[0].fstype, "sysfs");
+        assert_eq!(parts[0].device, "sysfs");
+        assert_eq!(parts[1].mountpoint, "/mnt/with space");
+        assert_eq!(parts[1].fstype, "ext4");
+        assert_eq!(parts[1].device, "/dev/sda1");
     }
 
     #[test]

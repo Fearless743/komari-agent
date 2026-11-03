@@ -38,7 +38,7 @@ pub use collector::Collector;
 pub use connections::{count_proc_net, count_proc_net_files};
 pub use disk::{
     DiskUsage, PartitionStat, aggregate_device_usage, is_physical_disk, parse_include_mountpoints,
-    parse_mounts, sum_included_usage,
+    parse_mountinfo, parse_mounts, sum_included_usage,
 };
 pub use error::MonitorError;
 pub use gpu::name::format_gpu_name_list;
