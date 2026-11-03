@@ -435,3 +435,30 @@ async fn registers_idn_endpoint_with_trailing_slashes() {
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0].path, "/api/clients/register?name=test-host");
 }
+
+#[tokio::test]
+async fn dns_resolution_is_covered_by_the_request_deadline() {
+    let directory = tempfile::tempdir().unwrap();
+    let config_path = directory.path().join("auto-discovery.json");
+    let blackhole = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+    let mut settings = AutoDiscoveryOptions {
+        endpoint: "http://slow.test:80".to_owned(),
+        auto_discovery_key: "secret-key".to_owned(),
+        hostname: Some("test-host".to_owned()),
+        config_path: Some(config_path.clone()),
+        timeout: Duration::from_millis(120),
+        custom_dns: Some(blackhole.local_addr().unwrap().to_string()),
+        ..AutoDiscoveryOptions::default()
+    };
+    settings.prefer_ip = PreferIp::V4;
+
+    let discovery = AutoDiscovery::new(settings).unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(2), discovery.handle())
+        .await
+        .expect("request deadline must include DNS")
+        .unwrap_err();
+
+    assert!(matches!(error, DiscoveryError::Timeout), "{error:?}");
+    assert!(!config_path.exists());
+}
