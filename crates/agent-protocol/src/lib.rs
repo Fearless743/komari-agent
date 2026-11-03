@@ -34,8 +34,8 @@ pub mod v1;
 
 pub use error::ProtocolError;
 pub use v1::{
-    BasicInfoV1, ConnectionsReportV1, CpuReportV1, DiskReportV1, GpuDetailReportV1,
-    GpuDeviceInfoV1, LoadReportV1, NetworkReportV1, RamReportV1, ReportV1,
+    BasicInfoV1, ConnectionsReportV1, CpuReportV1, DiskReportV1, GpuDeviceInfoV1, GpuReportV1,
+    LoadReportV1, NetworkReportV1, RamReportV1, ReportV1,
 };
 
 use serde::Serialize;

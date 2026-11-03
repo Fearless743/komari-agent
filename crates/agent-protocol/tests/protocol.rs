@@ -11,6 +11,15 @@ use serde_json::{Value, json};
 /// `monitoring.GenerateReport()` output for fixed metrics, marshalled by Go.
 const REPORT_GOLDEN: &str = r#"{"connections":{"tcp":42,"udp":7},"cpu":{"usage":12.3456789},"disk":{"total":1000204886016,"used":500000000000},"load":{"load1":0.5,"load15":0.125,"load5":0.25},"message":"","network":{"down":9876543210987,"totalDown":9223372036854775807,"totalUp":9007199254740993,"up":1234567890123},"process":321,"ram":{"total":34359738368,"used":8589934592},"swap":{"total":0,"used":0},"uptime":123456}"#;
 
+/// `monitoring.GenerateReport()` GPU section when detailed probing succeeds
+/// (two devices, second one with `uint64` max memory), marshalled by Go.
+const GPU_DETAILED_GOLDEN: &str = r#"{"gpu":{"average_usage":37.5,"count":2,"detailed_info":[{"memory_total":25757220864,"memory_used":1073741824,"name":"NVIDIA GeForce RTX 4090","temperature":61,"utilization":35.25},{"memory_total":18446744073709551615,"memory_used":0,"name":"NVIDIA GeForce RTX 3090","temperature":0,"utilization":12.5}]}}"#;
+
+/// `monitoring.GenerateReport()` GPU fallback when detailed probing fails but
+/// model detection succeeds, marshalled by Go.
+const GPU_MODELS_GOLDEN: &str =
+    r#"{"gpu":{"models":["NVIDIA GeForce RTX 4090","NVIDIA GeForce RTX 3090"]}}"#;
+
 /// `server.uploadBasicInfo` map marshalled by Go.
 const BASIC_INFO_GOLDEN: &str = r#"{"arch":"amd64","cpu_cores":16,"cpu_name":"AMD Ryzen 9 7950X 16-Core Processor","cpu_physical_cores":8,"disk_total":1000204886016,"gpu_name":"NVIDIA GeForce RTX 4090","ipv4":"203.0.113.42","ipv6":"","kernel_version":"6.8.0-51-generic","mem_total":34359738368,"os":"Ubuntu 24.04.3 LTS","swap_total":8589934592,"version":"1.2.3","virtualization":"kvm"}"#;
 
@@ -99,12 +108,14 @@ fn report_v1_keeps_int64_and_uint64_exact() {
             down: 2,
             total_up: u64::MAX,
             total_down: i64::MAX as u64,
+            ..NetworkReportV1::default()
         },
         uptime: 9_007_199_254_740_993,
         process: i64::MAX,
         ram: RamReportV1 {
             total: u64::MAX,
             used: 1,
+            ..RamReportV1::default()
         },
         ..ReportV1::default()
     };
@@ -139,20 +150,119 @@ fn report_v1_preserves_float_precision() {
 }
 
 #[test]
-fn report_v1_decodes_gpu_section() {
-    let golden = r#"{"gpu":{"count":2,"average_usage":37.5,"detailed_info":[{"name":"RTX 4090","memory_total":25757220864,"memory_used":1073741824,"utilization":35.0,"temperature":61},{"name":"RTX 3090","memory_total":25757220864,"memory_used":0,"utilization":40.0,"temperature":0}]}}"#;
-    let report = decode_v1::<ReportV1>(golden).unwrap();
+fn report_v1_decodes_gpu_detailed_go_golden() {
+    let report = decode_v1::<ReportV1>(GPU_DETAILED_GOLDEN).unwrap();
     let gpu = report.gpu.as_ref().expect("gpu present");
-    assert_eq!(gpu.count, 2);
-    assert_eq!(gpu.average_usage, 37.5);
-    assert_eq!(gpu.detailed_info.len(), 2);
-    assert_eq!(gpu.detailed_info[0].name, "RTX 4090");
-    assert_eq!(gpu.detailed_info[0].memory_total, 25_757_220_864);
-    assert_eq!(gpu.detailed_info[1].temperature, 0);
+    assert_eq!(gpu.count, Some(2));
+    assert_eq!(gpu.average_usage, Some(37.5));
+    assert_eq!(gpu.models, None);
+    let devices = gpu.detailed_info.as_ref().expect("detailed info present");
+    assert_eq!(devices.len(), 2);
+    assert_eq!(devices[0].name, "NVIDIA GeForce RTX 4090");
+    assert_eq!(devices[0].memory_total, 25_757_220_864);
+    assert_eq!(devices[0].memory_used, 1_073_741_824);
+    assert_eq!(devices[0].temperature, 61);
+    // Go agent uses uint64 for memory and temperature.
+    assert_eq!(devices[1].memory_total, u64::MAX);
+    assert_eq!(devices[1].temperature, 0);
 
-    // The GPU section is rebuilt from typed fields.
-    let round_trip = decode_v1::<ReportV1>(&report.to_json().unwrap()).unwrap();
-    assert_eq!(round_trip.gpu, report.gpu);
+    let reencoded = as_value(&report.to_json().unwrap());
+    assert_eq!(reencoded["gpu"], as_value(GPU_DETAILED_GOLDEN)["gpu"]);
+}
+
+#[test]
+fn report_v1_decodes_gpu_models_fallback_go_golden() {
+    let report = decode_v1::<ReportV1>(GPU_MODELS_GOLDEN).unwrap();
+    let gpu = report.gpu.as_ref().expect("gpu present");
+    assert_eq!(
+        gpu.models,
+        Some(vec![
+            "NVIDIA GeForce RTX 4090".to_string(),
+            "NVIDIA GeForce RTX 3090".to_string(),
+        ])
+    );
+    assert_eq!(gpu.count, None);
+    assert_eq!(gpu.average_usage, None);
+    assert_eq!(gpu.detailed_info, None);
+
+    let reencoded = report.to_json().unwrap();
+    assert_eq!(
+        as_value(&reencoded)["gpu"],
+        as_value(GPU_MODELS_GOLDEN)["gpu"]
+    );
+    // The fallback shape must not be padded with zero-valued detailed fields.
+    assert!(!reencoded.contains("count"));
+    assert!(!reencoded.contains("average_usage"));
+    assert!(!reencoded.contains("detailed_info"));
+}
+
+#[test]
+fn report_v1_preserves_nested_unknown_fields() {
+    let golden = r#"{"cpu":{"usage":1.5,"vendor":"AuthenticAMD","flags":["sse4_2"]},"ram":{"total":123,"used":1,"hugepages":2},"swap":{"total":0,"used":0,"zram":true},"load":{"load1":0.1,"load5":0.2,"load15":0.3,"runnable":5},"disk":{"total":10,"used":5,"inodes":100},"network":{"up":1,"down":2,"totalUp":3,"totalDown":4,"iface":"eth0"},"connections":{"tcp":1,"udp":2,"unix":3},"gpu":{"count":1,"average_usage":37.5,"detailed_info":[{"name":"gpu","memory_total":1,"memory_used":0,"utilization":35.5,"temperature":0,"pci":"0000:01:00.0"}],"driver":"nvidia"},"custom_section":{"x":1},"uptime":0,"process":0,"message":""}"#;
+    let report = decode_v1::<ReportV1>(golden).unwrap();
+
+    assert_eq!(report.cpu.extra["vendor"], json!("AuthenticAMD"));
+    assert_eq!(report.ram.extra["hugepages"], json!(2));
+    assert_eq!(report.swap.extra["zram"], json!(true));
+    assert_eq!(report.load.extra["runnable"], json!(5));
+    assert_eq!(report.disk.extra["inodes"], json!(100));
+    assert_eq!(report.network.extra["iface"], json!("eth0"));
+    assert_eq!(report.connections.extra["unix"], json!(3));
+    assert_eq!(report.extra["custom_section"], json!({"x": 1}));
+    let gpu = report.gpu.as_ref().unwrap();
+    assert_eq!(gpu.extra["driver"], json!("nvidia"));
+    assert_eq!(
+        gpu.detailed_info.as_ref().unwrap()[0].extra["pci"],
+        json!("0000:01:00.0")
+    );
+
+    let reencoded = report.to_json().unwrap();
+    assert_eq!(as_value(&reencoded), as_value(golden));
+}
+
+#[test]
+fn report_v1_treats_null_sections_as_zero_values() {
+    let golden = r#"{"cpu":null,"ram":null,"swap":null,"load":null,"disk":null,"network":null,"connections":null,"gpu":null,"uptime":null,"process":null,"message":null,"uuid":null,"method":null,"updated_at":null}"#;
+    let report = decode_v1::<ReportV1>(golden).expect("Go accepts null for every field");
+
+    assert_eq!(report.cpu, Default::default());
+    assert_eq!(report.ram, Default::default());
+    assert_eq!(report.swap, Default::default());
+    assert_eq!(report.load, Default::default());
+    assert_eq!(report.disk, Default::default());
+    assert_eq!(report.network, Default::default());
+    assert_eq!(report.connections, Default::default());
+    assert_eq!(report.gpu, None);
+    assert_eq!(report.uptime, 0);
+    assert_eq!(report.process, 0);
+    assert_eq!(report.message, "");
+    assert!(report.uuid.is_none());
+    assert!(report.method.is_none());
+    assert!(report.updated_at.is_none());
+
+    assert_eq!(
+        report.to_json().unwrap(),
+        encode_v1(&ReportV1::default()).unwrap()
+    );
+}
+
+#[test]
+fn report_v1_treats_nested_null_scalars_as_zero() {
+    let golden = r#"{"cpu":{"name":null,"cores":null,"arch":null,"usage":null},"ram":{"total":null,"used":null},"swap":{"total":null,"used":null},"load":{"load1":null,"load5":null,"load15":null},"disk":{"total":null,"used":null},"network":{"up":null,"down":null,"totalUp":null,"totalDown":null},"connections":{"tcp":null,"udp":null},"uptime":null,"process":null,"message":null}"#;
+    let report = decode_v1::<ReportV1>(golden).expect("null scalars become zero");
+
+    assert_eq!(report.cpu, Default::default());
+    assert_eq!(report.ram, Default::default());
+    assert_eq!(report.swap, Default::default());
+    assert_eq!(report.load, Default::default());
+    assert_eq!(report.disk, Default::default());
+    assert_eq!(report.network, Default::default());
+    assert_eq!(report.connections, Default::default());
+    assert_eq!(report.message, "");
+    assert_eq!(
+        report.to_json().unwrap(),
+        encode_v1(&ReportV1::default()).unwrap()
+    );
 }
 
 // ---------------------------------------------------------------------------
