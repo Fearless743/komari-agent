@@ -4,11 +4,9 @@ use std::process::Command;
 
 fn agent() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_komari-agent"));
-    // Keep the tests independent from the developer's environment.
-    command
-        .env_remove("AGENT_CONFIG_FILE")
-        .env_remove("AGENT_TOKEN")
-        .env_remove("AGENT_ENDPOINT");
+    // Run with a clean environment: developer or CI variables such as
+    // RUST_LOG, HOST_PROC or AGENT_* must not change test outcomes.
+    command.env_clear();
     command
 }
 
@@ -58,6 +56,7 @@ fn help_and_version_exit_successfully() {
 #[test]
 fn valid_flags_load_configuration_and_exit_successfully() {
     let output = agent()
+        .env("RUST_LOG", "info")
         .args(["--token", "secret", "--endpoint", "https://panel.example"])
         .output()
         .expect("run komari-agent");
