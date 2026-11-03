@@ -204,7 +204,7 @@ pub struct CliOverrides {
         long = "protocol-version",
         allow_negative_numbers = true,
         value_name = "VERSION",
-        help = "Report protocol version (1 or 2)"
+        help = "Report protocol version (only 1 is supported; v2 was removed)"
     )]
     pub protocol_version: Option<i64>,
 

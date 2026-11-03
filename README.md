@@ -87,7 +87,7 @@ JSON 中未出现的键不会覆盖更高优先级的值。
   "max_retries": 3,
   "reconnect_interval": 5,
   "info_report_interval": 5,
-  "protocol_version": 2
+  "protocol_version": 1
 }
 ```
 
@@ -117,5 +117,8 @@ AGENT_TOKEN=your-token AGENT_ENDPOINT=https://panel.example.com ./komari-agent
   - 等号后的取值只接受小写 `true`/`false`，`--flag=1`、`--flag=TRUE`、`--flag=t` 等会以退出码 `2`
     报错（环境变量仍遵循 Go 的 `true`/`1` 语义）。该差异已登记在
     [`docs/parity-deviations.md`](docs/parity-deviations.md)（D-003）。
+- **协议版本仅支持 v1**：v2 已按用户确认裁剪（后端无 `/api/clients/v2/rpc` 路由）。
+  `protocol_version` 默认 `1`；显式传入 `2` 或更大值会被降级为 `1` 并打印 warning。
+  该差异已登记为 D-004。
 - `--autoUpdate` 与 `--memory-mode-available` 已弃用，仍会被接受并打印警告后忽略。
 - `check-mem`、`list-disk` 子命令依赖采集实现，将在后续任务中补齐。
