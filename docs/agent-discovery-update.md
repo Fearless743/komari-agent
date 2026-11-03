@@ -27,7 +27,8 @@ DNS 错误分类（`DnsError`）：`Timeout`、`NxDomain`、`ServFail`、`Refuse
 
 - 自行构造/解析 DNS 报文，支持压缩指针、A/AAAA、NXDOMAIN、SERVFAIL/REFUSED。
 - UDP 响应 `TC=1` 时只解析头部就转 TCP 重试，因此“TC + 半条 answer”不会误报 `BadResponse`；
-  TCP 建连/传输失败或超时返回 `Truncated`，TCP 返回畸形报文则返回 `BadResponse`/`Io`。
+  TCP 建连/传输失败或超时统一返回 `Truncated`；TCP 返回的报文如果畸形，由
+  `parse_header`/`parse_response` 返回 `BadResponse`。
 - 每个查询使用 CSPRNG 生成事务 ID，并校验响应 question 的 QNAME/QTYPE/QCLASS 与查询一致。
 - 回退顺序：自定义服务器 → 内置/配置的 fallback 列表 → 系统解析器（可关闭）。
   Go 只回退到内置列表；系统解析器是任务要求的额外最后兜底。
@@ -127,8 +128,9 @@ cargo test -p agent-discovery -p agent-update
 6. **更新请求的自定义 DNS（待 A0x 接线）**：能力已提供——`agent-discovery` 导出
    `build_reqwest_client`（基于 reqwest `dns_resolver` 钩子），`agent-update` 通过
    `ReqwestUpdateHttp::with_client` 接受该 client，并有 mock DNS 集成测试。但 A06 没有接入 CLI
-   主循环，生产路径默认仍是系统 DNS；**待 A0x/CLI 任务把 `custom_dns` + `prefer_ip_version`
-   构造的 client 注入 `Updater::with_default_http`/`ReqwestUpdateHttp`** 后才算运行时对等。
+   主循环，生产路径默认仍是系统 DNS；**待 A0x/CLI 任务按
+   `Updater::new(options, Arc::new(ReqwestUpdateHttp::with_client(client)))` 注入
+   `custom_dns` + `prefer_ip_version` 构造的 client** 后才算运行时对等。
 7. **404 / 无匹配资产**：与 Go `UpdateCommand` 一致，`check_and_update` 在 release 列表为空、
    当前平台无匹配 asset 或仓库 404 时返回 `UpdateOutcome::UpToDate`，不会下载或替换任何文件；
    `check_latest` 仍返回 `NoRelease`/`NoAsset`/`HttpStatus` 以便诊断。

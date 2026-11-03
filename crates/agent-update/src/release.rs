@@ -1,13 +1,14 @@
 //! GitHub release metadata and platform asset selection.
 //!
-//! The Go agent delegates to `go-github-selfupdate`, which selects the asset
-//! whose file name contains the current `GOOS` and `GOARCH`. The Komari release
-//! workflow uploads raw binaries named `komari-agent-{os}-{arch}[.exe]`, so the
-//! selection below matches that naming first and falls back to token matching.
+//! The Go agent delegates to `go-github-selfupdate`, which lists releases and
+//! selects the asset whose name contains the current `GOOS` and `GOARCH`. The
+//! Komari release workflow uploads raw binaries named
+//! `komari-agent-{os}-{arch}[.exe]`, so the selection below is a strict
+//! whitelist for those canonical names.
 
 use serde::Deserialize;
 
-/// A GitHub release as returned by `/repos/{owner}/{repo}/releases/latest`.
+/// An entry returned by `/repos/{owner}/{repo}/releases`.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct GithubRelease {
     #[serde(default)]
