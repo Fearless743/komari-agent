@@ -44,10 +44,10 @@ pub struct Platform {
 }
 
 impl Platform {
-    pub fn new(os: impl Into<String>, arch: impl Into<String>) -> Self {
+    pub fn new(os: impl AsRef<str>, arch: impl AsRef<str>) -> Self {
         Self {
-            os: os.into(),
-            arch: arch.into(),
+            os: normalize_os(os.as_ref()),
+            arch: normalize_arch(arch.as_ref()),
         }
     }
 
@@ -71,85 +71,20 @@ impl Platform {
 
 /// Select the asset for `platform`.
 ///
-/// Preference order:
+/// Only the canonical release asset name is accepted:
 ///
-/// 1. exact `komari-agent-{os}-{arch}[.exe]` (and the short `{os}-{arch}`);
-/// 2. any `komari-agent-*` file whose name contains both platform tokens;
-/// 3. any other file containing both platform tokens.
+/// * Unix: `komari-agent-{os}-{arch}`;
+/// * Windows: `komari-agent-{os}-{arch}.exe`.
 ///
-/// Checksum, signature and archive assets are ignored: the updater replaces
-/// the running binary directly and never extracts archives.
+/// This is a whitelist, not a substring match. Packages (`.deb`, `.rpm`,
+/// `.msi`, `.dmg`, `.pkg`, `.apk`, `.AppImage`, `.sh`, `.run`), archives
+/// (`.tar.gz`, `.zip`, `.zst`, ...) and checksum/signature files are therefore
+/// never installed as the agent binary.
 pub fn select_asset<'a>(assets: &'a [Asset], platform: &Platform) -> Option<&'a Asset> {
-    let os = platform.os.to_ascii_lowercase();
-    let arch = platform.arch.to_ascii_lowercase();
-
-    let exact = [
-        format!("komari-agent-{os}-{arch}"),
-        format!("komari-agent-{os}-{arch}.exe"),
-        format!("{os}-{arch}"),
-        format!("{os}-{arch}.exe"),
-    ];
-
-    let mut best: Option<(u8, &Asset)> = None;
-
-    for asset in assets {
-        let name = asset.name.to_ascii_lowercase();
-
-        if is_ignored_asset(&name) {
-            continue;
-        }
-
-        // Never install a Windows executable on Unix, or the other way around.
-        if os != "windows" && name.ends_with(".exe") {
-            continue;
-        }
-
-        let tokens: Vec<&str> = name
-            .split(|character: char| !character.is_ascii_alphanumeric())
-            .filter(|token| !token.is_empty())
-            .collect();
-
-        if !tokens.contains(&os.as_str()) || !tokens.contains(&arch.as_str()) {
-            continue;
-        }
-
-        let score = if exact.iter().any(|candidate| candidate == &name) {
-            0
-        } else if name.starts_with("komari-agent") {
-            1
-        } else {
-            2
-        };
-
-        if best.is_none_or(|(best_score, _)| score < best_score) {
-            best = Some((score, asset));
-        }
-    }
-
-    best.map(|(_, asset)| asset)
-}
-
-fn is_ignored_asset(name: &str) -> bool {
-    const IGNORED_SUFFIXES: &[&str] = &[
-        ".sha256",
-        ".sha256sum",
-        ".sha512",
-        ".sha512sum",
-        ".sig",
-        ".asc",
-        ".txt",
-        ".json",
-        ".tar.gz",
-        ".tgz",
-        ".tar",
-        ".zip",
-        ".gz",
-        ".xz",
-        ".bz2",
-        ".7z",
-    ];
-
-    IGNORED_SUFFIXES.iter().any(|suffix| name.ends_with(suffix))
+    let expected = platform.asset_name();
+    assets
+        .iter()
+        .find(|asset| asset.name.eq_ignore_ascii_case(&expected))
 }
 
 fn normalize_os(os: &str) -> String {
@@ -195,15 +130,15 @@ mod tests {
     }
 
     #[test]
-    fn selects_windows_exe_and_ignores_unix_asset_with_same_tokens() {
+    fn selects_windows_exe_over_extensionless_asset() {
         let assets = vec![
             asset("komari-agent-windows-amd64"),
-            asset("notes-windows-amd64.txt"),
             asset("komari-agent-windows-amd64.sha256"),
+            asset("komari-agent-windows-amd64.exe"),
         ];
 
         let selected = select_asset(&assets, &Platform::new("windows", "amd64")).unwrap();
-        assert_eq!(selected.name, "komari-agent-windows-amd64");
+        assert_eq!(selected.name, "komari-agent-windows-amd64.exe");
     }
 
     #[test]
@@ -219,11 +154,19 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_token_matching() {
-        let assets = vec![asset("komari_agent_linux_amd64_bin")];
+    fn rejects_packages_archives_and_non_canonical_names() {
+        let assets = vec![
+            asset("komari-agent-linux-amd64.deb"),
+            asset("komari-agent-linux-amd64.rpm"),
+            asset("komari-agent-linux-amd64.zst"),
+            asset("komari-agent-linux-amd64.AppImage"),
+            asset("komari-agent-linux-amd64.sh"),
+            asset("komari-agent-linux-amd64.run"),
+            asset("komari-agent-linux-amd64.tar.gz"),
+            asset("komari_agent_linux_amd64_bin"),
+        ];
 
-        let selected = select_asset(&assets, &Platform::new("linux", "amd64")).unwrap();
-        assert_eq!(selected.name, "komari_agent_linux_amd64_bin");
+        assert!(select_asset(&assets, &Platform::new("linux", "amd64")).is_none());
     }
 
     #[test]
