@@ -84,3 +84,22 @@ pub(crate) fn swap() -> crate::types::SwapInfo {
         used: system.used_swap(),
     }
 }
+
+/// Load averages from `sysinfo`.
+///
+/// Windows does not expose load averages; `sysinfo` returns an error there and
+/// the collector reports zeros, matching the Go agent's degradation.
+pub(crate) fn load() -> crate::types::LoadAverage {
+    System::load_average()
+        .map(|load| crate::types::LoadAverage {
+            load1: load.one,
+            load5: load.five,
+            load15: load.fifteen,
+        })
+        .unwrap_or_default()
+}
+
+/// Uptime in seconds from `sysinfo`.
+pub(crate) fn uptime() -> u64 {
+    System::uptime().unwrap_or(0)
+}

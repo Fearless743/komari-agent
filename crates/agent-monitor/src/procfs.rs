@@ -223,6 +223,73 @@ pub fn read_meminfo(proc_root: &Path) -> Result<ProcMemInfo, MonitorError> {
     Ok(parse_meminfo(&content))
 }
 
+/// Parse `<proc_root>/loadavg`.
+///
+/// The file contains the 1/5/15 minute averages followed by scheduler fields;
+/// only the first three values are used. Any malformed or non-finite value
+/// yields an error, and the collector then reports zeros like Go's `Load()`.
+pub fn parse_loadavg(content: &str) -> Result<crate::types::LoadAverage, MonitorError> {
+    let mut fields = content.split_whitespace();
+
+    let mut next = || -> Result<f64, MonitorError> {
+        let value = fields
+            .next()
+            .ok_or_else(|| MonitorError::parse("proc/loadavg", "missing load average"))?;
+        let value = value.parse::<f64>().map_err(|_| {
+            MonitorError::parse("proc/loadavg", format!("invalid load average: {value}"))
+        })?;
+        if !value.is_finite() || value < 0.0 {
+            return Err(MonitorError::parse(
+                "proc/loadavg",
+                format!("invalid load average: {value}"),
+            ));
+        }
+        Ok(value)
+    };
+
+    Ok(crate::types::LoadAverage {
+        load1: next()?,
+        load5: next()?,
+        load15: next()?,
+    })
+}
+
+/// Read and parse `<proc_root>/loadavg`.
+pub fn read_loadavg(proc_root: &Path) -> Result<crate::types::LoadAverage, MonitorError> {
+    let path = proc_root.join("loadavg");
+    let content = fs::read_to_string(&path).map_err(|source| MonitorError::io(&path, source))?;
+    parse_loadavg(&content)
+}
+
+/// Parse `<proc_root>/uptime`, returning whole seconds since boot.
+///
+/// The kernel exposes a fractional value; the fraction is truncated to match
+/// Go's `host.Uptime() -> uint64`.
+pub fn parse_uptime(content: &str) -> Result<u64, MonitorError> {
+    let value = content
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| MonitorError::parse("proc/uptime", "missing uptime value"))?;
+    let seconds = value
+        .parse::<f64>()
+        .map_err(|_| MonitorError::parse("proc/uptime", format!("invalid uptime: {value}")))?;
+    if !seconds.is_finite() || seconds < 0.0 {
+        return Err(MonitorError::parse(
+            "proc/uptime",
+            format!("invalid uptime: {value}"),
+        ));
+    }
+
+    Ok(seconds as u64)
+}
+
+/// Read and parse `<proc_root>/uptime`.
+pub fn read_uptime(proc_root: &Path) -> Result<u64, MonitorError> {
+    let path = proc_root.join("uptime");
+    let content = fs::read_to_string(&path).map_err(|source| MonitorError::io(&path, source))?;
+    parse_uptime(&content)
+}
+
 /// Compute usage percentages between two samples.
 ///
 /// Counters that moved backwards (container migration, kernel counter reset)
