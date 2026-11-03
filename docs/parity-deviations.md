@@ -55,3 +55,40 @@
 （`true`/`1` 启用，其他值保持原值）。
 
 状态：**用户确认的有意差异**（A01 决策：保持 Rust 现状，只接受 `true`/`false`，不扩展解析器）。
+
+## D-004 自定义 DNS 失败后额外回退到系统解析器
+
+- **Rust**：自定义 DNS → 内置/配置的 fallback 服务器列表 → 系统解析器（默认开启，可配置关闭）。
+- **Go**：自定义 DNS → 内置 `DNSServers` 列表；自定义 DNS 为空时才使用系统解析器。
+
+原因：A06 任务要求“支持系统默认解析作为回退”，提高容器 / 受限网络下的可用性。
+
+影响：自定义 DNS 与所有内置服务器都失败时，Rust 仍可能通过 `/etc/hosts` 或系统 DNS
+解析成功；Go 会直接失败。需要严格对齐时设置 `ResolverConfig::system_fallback = false`。
+
+状态：任务要求的增强，不影响正常路径。
+
+## D-005 自动发现 endpoint 的尾斜杠处理更宽松
+
+- **Rust**：构造注册 URL 时去掉 endpoint 路径末尾的全部 `/`，再拼接
+  `/api/clients/register`。
+- **Go**：只去掉一个尾随 `/`，然后再拼接。
+
+影响：endpoint 以 `//` 结尾时，Rust 生成的 URL 不会出现重复斜杠；正常单个 `/` 时两者一致。
+
+## D-006 更新流程不直接退出进程
+
+- **Rust**：`agent-update` 在替换成功后返回 `UpdateOutcome::Updated`，由调用方决定是否以
+  `RESTART_EXIT_CODE`（42）退出并交给服务管理器重启。
+- **Go**：`CheckAndUpdate` 成功后直接 `os.Exit(42)`。
+
+原因：库 crate 不应终止宿主进程，且测试过程绝不能退出。CLI 接线时需要显式使用 42。
+
+## D-007 更新校验比 Go 更严格
+
+- **Rust**：除大小/可选 SHA-256 外，还拒绝空下载和明显的 HTML/XML/JSON 错误页。
+- **Go**：`go-github-selfupdate` 主要依赖下载结果和文件替换，未额外做内容类型嗅探。
+
+影响：若发布资产本身以 `<` 或 `{` 开头（正常 ELF/Mach-O/PE 不会），会被拒绝。大小和
+digest 校验失败时不会替换现有二进制，避免半安装状态。
+
