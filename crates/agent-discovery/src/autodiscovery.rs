@@ -13,7 +13,6 @@
 
 use std::fs;
 use std::io::ErrorKind;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -74,44 +73,36 @@ pub trait HttpClient: Send + Sync {
     async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, DiscoveryError>;
 }
 
-/// `reqwest` transport using the custom DNS resolver and IP ordering.
+/// `reqwest` transport using the custom DNS resolver.
+///
+/// A single client is used for all addresses; reqwest/hyper handles address
+/// attempts inside the connector. This avoids re-sending a POST after it may
+/// already have reached the server.
 pub struct ReqwestHttpClient {
-    resolver: DnsResolver,
+    client: reqwest::Client,
     timeout: Duration,
-    ignore_unsafe_cert: bool,
-    user_agent: String,
 }
 
 impl ReqwestHttpClient {
-    pub fn new(resolver: DnsResolver, timeout: Duration, ignore_unsafe_cert: bool) -> Self {
-        Self {
-            resolver,
-            timeout: if timeout.is_zero() {
-                Duration::from_secs(30)
-            } else {
-                timeout
-            },
-            ignore_unsafe_cert,
-            user_agent: format!("komari-agent-rs/{}", env!("CARGO_PKG_VERSION")),
-        }
-    }
+    /// Build a client with the custom resolver and an overall request timeout.
+    pub fn new(
+        resolver: DnsResolver,
+        timeout: Duration,
+        ignore_unsafe_cert: bool,
+    ) -> Result<Self, DiscoveryError> {
+        let timeout = if timeout.is_zero() {
+            Duration::from_secs(30)
+        } else {
+            timeout
+        };
 
-    fn client(
-        &self,
-        resolved: Option<(&str, SocketAddr)>,
-    ) -> Result<reqwest::Client, DiscoveryError> {
-        let mut builder = reqwest::Client::builder()
-            .timeout(self.timeout)
-            .danger_accept_invalid_certs(self.ignore_unsafe_cert)
-            .user_agent(&self.user_agent);
+        let client =
+            crate::http_client::build_reqwest_client(resolver, timeout, ignore_unsafe_cert)
+                .map_err(|err| {
+                    DiscoveryError::Http(format!("failed to build HTTP client: {err}"))
+                })?;
 
-        if let Some((host, address)) = resolved {
-            builder = builder.resolve(host, address);
-        }
-
-        builder
-            .build()
-            .map_err(|err| DiscoveryError::Http(format!("failed to build HTTP client: {err}")))
+        Ok(Self { client, timeout })
     }
 
     async fn send_once(
@@ -132,16 +123,9 @@ impl ReqwestHttpClient {
             builder = builder.body(body.clone());
         }
 
-        let response = builder
-            .send()
-            .await
-            .map_err(|err| DiscoveryError::Http(err.to_string()))?;
+        let response = builder.send().await.map_err(map_reqwest_error)?;
         let status = response.status().as_u16();
-        let body = response
-            .bytes()
-            .await
-            .map_err(|err| DiscoveryError::Http(err.to_string()))?
-            .to_vec();
+        let body = response.bytes().await.map_err(map_reqwest_error)?.to_vec();
 
         Ok(HttpResponse { status, body })
     }
@@ -150,41 +134,20 @@ impl ReqwestHttpClient {
 #[async_trait]
 impl HttpClient for ReqwestHttpClient {
     async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, DiscoveryError> {
-        let url = Url::parse(&request.url)
-            .map_err(|err| DiscoveryError::InvalidEndpoint(err.to_string()))?;
-        let host = url
-            .host()
-            .ok_or_else(|| DiscoveryError::InvalidEndpoint("URL has no host".to_owned()))?;
-        let (host, is_ip) = match host {
-            url::Host::Domain(domain) => (domain.to_owned(), false),
-            url::Host::Ipv4(address) => (address.to_string(), true),
-            url::Host::Ipv6(address) => (address.to_string(), true),
-        };
-        let port = url
-            .port_or_known_default()
-            .ok_or_else(|| DiscoveryError::InvalidEndpoint("URL has no port".to_owned()))?;
-
-        if is_ip {
-            let client = self.client(None)?;
-            return self.send_once(&client, &request).await;
+        // This is a single deadline covering DNS (including fallback
+        // servers), connection attempts, TLS and body reading.
+        match tokio::time::timeout(self.timeout, self.send_once(&self.client, &request)).await {
+            Ok(result) => result,
+            Err(_) => Err(DiscoveryError::Timeout),
         }
+    }
+}
 
-        let addresses = self.resolver.resolve_host(&host).await?;
-        let mut last_error = None;
-
-        for address in addresses {
-            let resolved = SocketAddr::new(address, port);
-            let client = self.client(Some((host.as_str(), resolved)))?;
-            match self.send_once(&client, &request).await {
-                Ok(response) => return Ok(response),
-                Err(err) => last_error = Some(err.to_string()),
-            }
-        }
-
-        Err(DiscoveryError::Http(format!(
-            "failed to connect to any resolved address for {host}: {}",
-            last_error.unwrap_or_else(|| "no addresses".to_owned())
-        )))
+fn map_reqwest_error(err: reqwest::Error) -> DiscoveryError {
+    if err.is_timeout() {
+        DiscoveryError::Timeout
+    } else {
+        DiscoveryError::Http(err.to_string())
     }
 }
 
@@ -283,7 +246,7 @@ impl AutoDiscovery {
                 resolver.clone(),
                 timeout,
                 options.ignore_unsafe_cert,
-            )),
+            )?),
         };
 
         let config_path = options
@@ -548,6 +511,9 @@ pub enum DiscoveryError {
 
     #[error("HTTP request failed: {0}")]
     Http(String),
+
+    #[error("HTTP request timed out")]
+    Timeout,
 
     #[error(transparent)]
     Dns(#[from] DnsError),

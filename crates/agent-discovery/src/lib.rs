@@ -12,6 +12,7 @@
 
 pub mod autodiscovery;
 pub mod dns;
+pub mod http_client;
 pub mod idna;
 
 pub use autodiscovery::{
@@ -23,4 +24,5 @@ pub use dns::{
     ParsedResponse, PreferIp, RecordType, ResolverConfig, build_query, local_has_ipv4,
     normalize_dns_server, parse_header, parse_response, sort_ips_by_preference, split_host_port,
 };
+pub use http_client::{DnsReqwestResolver, build_reqwest_client};
 pub use idna::{IdnaError, convert_host_to_ascii, convert_url_to_ascii};

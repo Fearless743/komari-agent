@@ -329,7 +329,7 @@ async fn times_out_when_server_does_not_answer() {
     let discovery = AutoDiscovery::new(settings).unwrap();
     let error = discovery.handle().await.unwrap_err();
 
-    assert!(matches!(error, DiscoveryError::Http(_)), "{error:?}");
+    assert!(matches!(error, DiscoveryError::Timeout), "{error:?}");
     assert!(!config_path.exists());
 }
 
