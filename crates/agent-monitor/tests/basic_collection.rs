@@ -566,6 +566,8 @@ fn basic_info_matches_go_field_semantics() {
         "kernel_version",
         "mem_total",
         "swap_total",
+        "disk_total",
+        "gpu_name",
         "virtualization",
     ] {
         assert!(json.get(key).is_some(), "missing basic info key {key}");
@@ -596,10 +598,21 @@ fn report_metrics_match_generate_report_wire_shape() {
         json.as_object().expect("object").keys().cloned().collect();
     assert_eq!(
         top_keys,
-        ["cpu", "load", "ram", "swap", "uptime"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect()
+        [
+            "connections",
+            "cpu",
+            "disk",
+            "load",
+            "message",
+            "network",
+            "process",
+            "ram",
+            "swap",
+            "uptime"
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
     );
 
     // Static fixture: the raw usage is 0, the Go report floor applies.
@@ -612,6 +625,17 @@ fn report_metrics_match_generate_report_wire_shape() {
     assert_eq!(json["swap"]["used"], kib(5000));
     assert_eq!(json["load"]["load1"], 0.52);
     assert_eq!(json["uptime"], 12345);
+
+    // A fixture proc root has no network/mount/socket files, so the new
+    // sections degrade to zeroes with a diagnostic message.
+    assert_eq!(json["disk"]["total"], 0);
+    assert_eq!(json["disk"]["used"], 0);
+    assert_eq!(json["network"]["up"], 0);
+    assert_eq!(json["network"]["totalUp"], 0);
+    assert_eq!(json["connections"]["tcp"], 0);
+    assert_eq!(json["process"], 0);
+    assert!(json["message"].as_str().unwrap().contains("network speed"));
+    assert!(json.get("gpu").is_none(), "GPU is opt-in");
 }
 
 #[test]
