@@ -56,17 +56,19 @@
 
 状态：**用户确认的有意差异**（A01 决策：保持 Rust 现状，只接受 `true`/`false`，不扩展解析器）。
 
-## D-004 自定义 DNS 失败后额外回退到系统解析器
+## D-004 仅实现协议 v1，`protocol_version` 默认 1
 
-- **Rust**：自定义 DNS → 内置/配置的 fallback 服务器列表 → 系统解析器（默认开启，可配置关闭）。
-- **Go**：自定义 DNS → 内置 `DNSServers` 列表；自定义 DNS 为空时才使用系统解析器。
+- **Go**：`protocol_version` 默认 `2`，请求 v2 时会走 `/api/clients/v2/rpc`、JSON-RPC 与 gzip。
+- **Rust**：只实现 v1。`protocol_version` 默认 `1`；显式配置 `2` 或更大值会被降级为 `1`，
+  并通过 `tracing::warn!` 输出提示。
 
-原因：A06 任务要求“支持系统默认解析作为回退”，提高容器 / 受限网络下的可用性。
+原因：用户确认当前 Go 后端没有 `/api/clients/v2/rpc` 路由，v2 在本项目是无效路径；保留默认 2
+会让后续任务误以为需要实现 v2。
 
-影响：自定义 DNS 与所有内置服务器都失败时，Rust 仍可能通过 `/etc/hosts` 或系统 DNS
-解析成功；Go 会直接失败。需要严格对齐时设置 `ResolverConfig::system_fallback = false`。
+影响：从 Go 版迁移且显式写死 `protocol_version: 2` 的配置仍能启动，但实际使用 v1；
+日志中会出现降级提示。v1 上报与基础信息接口不受影响。
 
-状态：任务要求的增强，不影响正常路径。
+状态：**用户确认的有意裁剪**，A05 及后续任务不得恢复 v2，除非后端先提供路由并重新确认需求。
 
 ## D-005 自动发现 endpoint 的尾斜杠处理更宽松
 
@@ -131,3 +133,15 @@ workflow 只上传裸二进制 `komari-agent-{os}-{arch}[.exe]`，因此正常�
 原因：`if-addrs` 不暴露 POSIX `IFF_UP`，Unix 路径改用 libc `getifaddrs` 以精确对齐。
 影响：Windows 上极端网络状态下 Auto 的 IPv4/IPv6 选择可能与 Go 不同；显式设置
 `prefer_ip_version = "4"` 或 `"6"` 可完全避免该差异。
+
+## D-012 自定义 DNS 失败后额外回退到系统解析器
+
+- **Rust**：自定义 DNS → 内置/配置的 fallback 服务器列表 → 系统解析器（默认开启，可配置关闭）。
+- **Go**：自定义 DNS → 内置 `DNSServers` 列表；自定义 DNS 为空时才使用系统解析器。
+
+原因：A06 任务要求“支持系统默认解析作为回退”，提高容器 / 受限网络下的可用性。
+
+影响：自定义 DNS 与所有内置服务器都失败时，Rust 仍可能通过 `/etc/hosts` 或系统 DNS
+解析成功；Go 会直接失败。需要严格对齐时设置 `ResolverConfig::system_fallback = false`。
+
+状态：任务要求的增强，不影响正常路径。
