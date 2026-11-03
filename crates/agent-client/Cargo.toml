@@ -5,16 +5,25 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Dashboard transport client for the Komari agent"
+description = "Dashboard transport and reporting loop for the Komari agent"
 
 [dependencies]
-anyhow.workspace = true
+agent-discovery = { path = "../agent-discovery" }
+agent-monitor = { path = "../agent-monitor" }
+agent-protocol = { path = "../agent-protocol" }
 async-trait.workspace = true
-bytes.workspace = true
 futures-util.workspace = true
+globset.workspace = true
+if-addrs = "0.15"
+libc = "0.2"
 reqwest.workspace = true
+rustls = "0.23"
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 tracing.workspace = true
-uuid.workspace = true
+url = "2"
+
+[dev-dependencies]
+tempfile.workspace = true

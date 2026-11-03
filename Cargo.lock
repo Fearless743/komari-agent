@@ -12,9 +12,19 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "agent-cli"
 version = "0.0.1"
 dependencies = [
+ "agent-client",
  "agent-config",
+ "agent-discovery",
+ "agent-monitor",
+ "agent-protocol",
+ "agent-update",
  "anyhow",
+ "async-trait",
  "clap",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
@@ -23,16 +33,23 @@ dependencies = [
 name = "agent-client"
 version = "0.0.1"
 dependencies = [
- "anyhow",
+ "agent-discovery",
+ "agent-monitor",
+ "agent-protocol",
  "async-trait",
- "bytes",
  "futures-util",
+ "globset",
+ "if-addrs",
+ "libc",
  "reqwest",
+ "rustls",
+ "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-tungstenite",
  "tracing",
- "uuid",
+ "url",
 ]
 
 [[package]]
@@ -1564,6 +1581,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "rustls-pki-types",
  "rustls-webpki",
@@ -2214,18 +2232,6 @@ name = "utf_types"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a3b425286980a367278453f3b6d28cdcb134b574e5a35824a6ff5eebad50bb6"
-
-[[package]]
-name = "uuid"
-version = "1.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
-dependencies = [
- "getrandom 0.4.3",
- "js-sys",
- "serde_core",
- "wasm-bindgen",
-]
 
 [[package]]
 name = "valuable"
