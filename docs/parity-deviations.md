@@ -240,3 +240,78 @@ macOS/FreeBSD/Windows 同样为 0（D-017）。
 与原生进程枚举。
 
 状态：已知限制，待平台任务补齐。
+
+## D-018 重试耗尽后 CLI 以非零码退出
+
+- **Go**：`EstablishWebSocketConnection` 在 v1 下耗尽 `max_retries` 后返回，root 命令的
+  `for { server.UpdateBasicInfo(); server.EstablishWebSocketConnection() }` 立即再次进入连接循环。
+- **Rust**：`AgentClient::run` 返回 `RunOutcome::RetriesExhausted`，CLI 以退出码 1 结束。
+
+原因：任务要求 v1 下“返回/退出”，同时让启动失败可被服务管理器感知。退出码 0 会让
+systemd `Restart=on-failure` 不重启，因此改为 1。
+影响：`Restart=always` 与 `Restart=on-failure` 均可恢复；若部署依赖进程内部无限重连，
+请把 `max_retries` 设为较大的值。服务管理器可配置 `Restart=on-failure` 或 `always`。
+
+## D-019 指标采集已收敛到 A03，A05 仅保留 IP-only 模块
+
+- **Go**：`monitoring` 统一提供 CPU/内存/磁盘/网络/连接/进程/GPU，IP 由
+  `monitoring.GetIPAddress` 采集。
+- **Rust**：A03 的 `agent_monitor::Collector` 已提供
+  `collect_report_metrics()`（含 disk/network/connections/process/GPU/message）和
+  `collect_basic_info()`（含 `disk_total`/`gpu_name`）。A05 已删除自己重复的
+  磁盘/网络/GPU/连接/进程采集，`MonitorReportProvider` 直接调用 A03：
+  - CPU 仍用 `sample_cpu(1s)` 固定窗口，并覆盖报告中的 CPU 值；
+  - `month_rotate` 通过 `MonitorOptions::from_monitor_config` 传入 netstatic；
+  - `ReportSample::from_metrics` 显式逐字段构造，A03 新增字段不会被静默丢弃。
+  A03 不提供 IP，因此 `agent-client::ip` 仅保留 IP 采集；其外部服务差异见 D-020。
+
+状态：已收敛。`agent-client::supplement` 已删除，不再有第二套指标采集实现。
+
+## D-020 不访问外部 IP 查询服务，NIC 地址优先于 custom
+
+- **Go**：`GetIPAddress` 的优先级是：启用 `get_ip_addr_from_nic` 且取到地址时直接返回；
+  否则使用 `custom_ipv4`/`custom_ipv6`；两者都没有时请求 visa.cn、ipify 等外部服务。
+- **Rust**：保留 NIC 优先和 custom 次之的优先级，但**不请求外部 IP 服务**；
+  未配置 NIC/custom 时基础信息中的 `ipv4`/`ipv6` 为空字符串。
+  - Unix：用 `getifaddrs` + `IFF_UP`（不含 `IFF_RUNNING`）判断接口可用，排除回环接口、
+    回环地址和 IPv6 链路本地地址，与 Go `net.FlagUp` 语义一致；
+  - 非 Unix：`if-addrs::is_oper_up()` 只是近似（另见 D-011）。
+
+原因：避免 agent 在启动/基础信息上报时产生额外的外网依赖和隐私泄露；容器与内网部署
+通常更希望由 `custom_ipv4`/`custom_ipv6` 或网卡地址决定。
+影响：依赖公网出口 IP 自动识别的部署需要在配置中显式设置 `custom_ipv4`/`custom_ipv6`，
+或启用 `get_ip_addr_from_nic`。
+
+## D-021 WebSocket 不走 HTTP(S)_PROXY，也不启用 permessage-deflate
+
+- **Go**：gorilla/websocket 使用 `http.ProxyFromEnvironment`，并默认启用
+  `EnableCompression`（除非 `disable_compression`）。
+- **Rust**：`tokio-tungstenite` 直连目标地址；v1 帧是普通 JSON，不启用 permessage-deflate。
+  `--disable-compression` 仅为配置兼容而保留，实际始终不压缩。
+
+原因：v1 上报体很小，压缩收益有限；代理支持需要额外解析代理协议与 TLS 隧道，暂不在 A05 范围。
+影响：必须经 HTTP 代理访问面板的部署目前无法直接使用 Rust agent；需要直连或使用系统级
+透明代理。`--disable-compression` 不会改变行为。
+
+## D-022 月度流量统计已收敛到 A03
+
+- **Go**：`month_rotate != 0` 时启动 `netstatic`，网络 `totalUp`/`totalDown` 按月度重置点统计。
+- **Rust**：A03 已实现 netstatic；A05 通过
+  `MonitorOptions::from_monitor_config(..., month_rotate, ...)` 把配置传入
+  `agent_monitor::Collector`，由 `collect_report_metrics()` 产出月度累计值。
+  采样点与持久化语义见 A03 的 D-013。
+
+状态：已收敛，不再是 A05 的差异；保留编号用于历史对照。
+
+## D-023 uptime 读取失败不写入上报 message
+
+- **Go**：`monitoring.GenerateReport` 在 `monitoring.Uptime()` 返回错误时把
+  `failed to get uptime: ...` 追加到 `message`。
+- **Rust**：A03 的 `collect_report_metrics()` 只把 network/connections/GPU 错误写入
+  `message`；uptime 读取失败会记录日志并按平台回退（`strict_proc` 下直接为 0），
+  不追加到 `message`。
+
+原因：uptime 采集已收敛到 A03，A05 不再维护第二套 message 组装逻辑；A03 当前接口
+只返回 `u64`，没有携带 uptime 错误。
+影响：依赖 `message` 中 uptime 诊断的部署会少一行文本，其余上报字段不受影响；
+`HOST_PROC`（strict_proc）下 uptime 读取失败静默归零，不混入宿主机指标。

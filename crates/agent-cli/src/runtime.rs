@@ -1,0 +1,362 @@
+//! Runtime assembly: discovery, dependency construction and the report loop.
+//!
+//! Everything that touches the real system is built here. The individual
+//! pieces are injectable ([`RuntimeDeps`]) so tests can drive the full CLI
+//! wiring with mock transports.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use agent_client::{
+    AgentClient, BasicInfoUploader, ClientOptions, Clock, IpOptions, MonitorReportProvider,
+    ReportProvider, TokioClock, TungsteniteTransport, WsClientConfig, WsTransport,
+};
+use agent_config::Config;
+use agent_discovery::{
+    AutoDiscovery, AutoDiscoveryOptions, DnsResolver, HttpClient, PreferIp, ReqwestHttpClient,
+    ResolverConfig, build_reqwest_client,
+};
+use agent_monitor::{Collector, MonitorOptions};
+use agent_update::{CHECK_INTERVAL, ReqwestUpdateHttp, UpdateHttp, UpdateOptions, Updater};
+use thiserror::Error;
+
+use crate::VERSION;
+
+/// Runtime failures that reach the top-level CLI.
+#[derive(Debug, Error)]
+pub enum RuntimeError {
+    #[error(
+        "missing credentials: set --token/--endpoint, environment variables or --auto-discovery"
+    )]
+    MissingCredentials,
+
+    #[error("auto-discovery failed: {0}")]
+    Discovery(#[from] agent_discovery::DiscoveryError),
+
+    #[error("DNS configuration error: {0}")]
+    Dns(#[from] agent_discovery::DnsError),
+
+    #[error("failed to build HTTP client: {0}")]
+    Http(String),
+
+    #[error("invalid endpoint: {0}")]
+    Endpoint(#[from] agent_client::EndpointError),
+}
+
+/// Where the process should go after the runtime returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunExit {
+    Finished,
+    /// The v1 loop exhausted `max_retries`; the process exits non-zero so a
+    /// service manager with `Restart=on-failure` starts it again.
+    RetriesExhausted,
+    Restart(i32),
+}
+
+/// Injected runtime pieces.
+pub struct RuntimeDeps {
+    pub ws: Arc<dyn WsTransport>,
+    pub http: Arc<dyn HttpClient>,
+    pub clock: Arc<dyn Clock>,
+    pub provider: Arc<dyn ReportProvider>,
+    /// `None` disables automatic updates (short circuit).
+    pub updater: Option<Arc<Updater>>,
+}
+
+impl RuntimeDeps {
+    /// Build the production dependencies from a resolved configuration.
+    pub fn production(config: &Config) -> Result<Self, RuntimeError> {
+        let resolver = resolver(config)?;
+
+        let http: Arc<dyn HttpClient> = Arc::new(
+            ReqwestHttpClient::new(
+                resolver.clone(),
+                Duration::from_secs(30),
+                config.ignore_unsafe_cert,
+            )
+            .map_err(|err| RuntimeError::Http(err.to_string()))?,
+        );
+
+        let ws_config = WsClientConfig {
+            resolver: resolver.clone(),
+            handshake_timeout: Duration::from_secs(15),
+            ignore_unsafe_cert: config.ignore_unsafe_cert,
+            cf_access_client_id: config.cf_access_client_id.clone(),
+            cf_access_client_secret: config.cf_access_client_secret.clone(),
+        };
+        let ws: Arc<dyn WsTransport> = Arc::new(TungsteniteTransport::new(ws_config));
+
+        let monitor = monitor_options(config);
+        let provider: Arc<dyn ReportProvider> = Arc::new(MonitorReportProvider::new(
+            Arc::new(Collector::new(monitor)),
+            ip_options(config),
+            Duration::from_secs(1),
+            VERSION,
+        ));
+
+        let updater = if config.disable_auto_update {
+            None
+        } else {
+            let client =
+                build_reqwest_client(resolver, Duration::from_secs(60), config.ignore_unsafe_cert)
+                    .map_err(|err| RuntimeError::Http(err.to_string()))?;
+            let http: Arc<dyn UpdateHttp> = Arc::new(ReqwestUpdateHttp::with_client(client));
+            let updater = Updater::new(
+                UpdateOptions {
+                    current_version: VERSION.to_owned(),
+                    target_path: std::env::current_exe().ok(),
+                    ..UpdateOptions::default()
+                },
+                http,
+            )
+            .map_err(|err| RuntimeError::Http(err.to_string()))?;
+            Some(Arc::new(updater))
+        };
+
+        Ok(Self {
+            ws,
+            http,
+            clock: Arc::new(TokioClock),
+            provider,
+            updater,
+        })
+    }
+}
+
+/// Resolve credentials from `auto-discovery.json` or register a new client.
+pub async fn resolve_config(
+    mut config: Config,
+    http: Option<Arc<dyn HttpClient>>,
+    config_path: Option<PathBuf>,
+) -> Result<Config, RuntimeError> {
+    if config.auto_discovery_key.is_empty() {
+        if config.token.is_empty() || config.endpoint.is_empty() {
+            return Err(RuntimeError::MissingCredentials);
+        }
+        return Ok(config);
+    }
+
+    if config.endpoint.is_empty() {
+        return Err(RuntimeError::MissingCredentials);
+    }
+
+    let options = AutoDiscoveryOptions {
+        endpoint: config.endpoint.clone(),
+        auto_discovery_key: config.auto_discovery_key.clone(),
+        config_path,
+        cf_access_client_id: config.cf_access_client_id.clone(),
+        cf_access_client_secret: config.cf_access_client_secret.clone(),
+        timeout: Duration::from_secs(30),
+        ignore_unsafe_cert: config.ignore_unsafe_cert,
+        prefer_ip: prefer_ip(&config)?,
+        custom_dns: non_empty(&config.custom_dns),
+        http,
+        ..AutoDiscoveryOptions::default()
+    };
+
+    let discovery = AutoDiscovery::new(options)?;
+    let result = discovery.handle().await?;
+    config.token = result.config.token;
+    config.endpoint = result.endpoint;
+
+    if config.token.is_empty() {
+        return Err(RuntimeError::MissingCredentials);
+    }
+
+    Ok(config)
+}
+
+/// Run the client and the optional update loop until one of them returns.
+pub async fn run_with(config: Config, deps: RuntimeDeps) -> Result<RunExit, RuntimeError> {
+    let options = client_options(&config);
+    let uploader = Arc::new(
+        BasicInfoUploader::new(deps.http, config.endpoint.clone(), config.token.clone())
+            .with_access_headers(
+                config.cf_access_client_id.clone(),
+                config.cf_access_client_secret.clone(),
+            ),
+    );
+    let client = AgentClient::new(options, deps.ws, uploader, deps.provider, deps.clock)?;
+
+    // Go performs one synchronous CheckAndUpdate before it starts the report
+    // loop, then checks again every six hours. An installed update must win
+    // over a panel that is temporarily refusing connections.
+    if let Some(updater) = deps.updater {
+        if let Some(code) = run_initial_update(&updater).await {
+            return Ok(RunExit::Restart(code));
+        }
+
+        let update_task = tokio::spawn(run_update_loop(updater));
+        tokio::select! {
+            outcome = client.run() => Ok(run_exit(outcome)),
+            code = update_task => match code {
+                Ok(Some(code)) => Ok(RunExit::Restart(code)),
+                // The periodic loop normally never returns. If it does
+                // without a restart request, keep reporting.
+                _ => Ok(run_exit(client.run().await)),
+            },
+        }
+    } else {
+        Ok(run_exit(client.run().await))
+    }
+}
+
+fn run_exit(outcome: agent_client::RunOutcome) -> RunExit {
+    match outcome {
+        agent_client::RunOutcome::RetriesExhausted => RunExit::RetriesExhausted,
+    }
+}
+
+/// One synchronous update check, matching Go's `update.CheckAndUpdate()` call
+/// before the report loop starts.
+pub async fn run_initial_update(updater: &Updater) -> Option<i32> {
+    match updater.check_and_update().await {
+        Ok(outcome) => outcome.exit_code(),
+        Err(err) => {
+            tracing::warn!(%err, "initial update check failed");
+            None
+        }
+    }
+}
+
+/// Drive `agent-update`'s periodic loop and translate the outcome to an exit
+/// code. Kept public so the CLI tests can exercise the same path as `main`.
+pub async fn run_update_loop(updater: Arc<Updater>) -> Option<i32> {
+    run_update_loop_after(updater, CHECK_INTERVAL).await
+}
+
+/// Periodic update loop with an injectable first delay (tests use zero).
+pub async fn run_update_loop_after(updater: Arc<Updater>, delay: Duration) -> Option<i32> {
+    // Go's DoUpdateWorks uses a six-hour ticker; the initial check already ran
+    // synchronously in `run_with`.
+    if !delay.is_zero() {
+        tokio::time::sleep(delay).await;
+    }
+
+    match updater.run_periodic(CHECK_INTERVAL, || false).await {
+        Ok(Some(outcome)) => outcome.exit_code(),
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!(%err, "automatic update failed");
+            None
+        }
+    }
+}
+
+/// Map configuration to the client loop options.
+pub fn client_options(config: &Config) -> ClientOptions {
+    ClientOptions {
+        endpoint: config.endpoint.clone(),
+        token: config.token.clone(),
+        interval: config.interval,
+        max_retries: config.max_retries,
+        reconnect_interval: Duration::from_secs(config.reconnect_interval.max(0) as u64),
+        heartbeat_interval: agent_client::HEARTBEAT_INTERVAL,
+        info_report_interval: Duration::from_secs((config.info_report_interval.max(1) as u64) * 60),
+    }
+}
+
+/// Map configuration to monitor options, including `HOST_PROC`/`HOST_SYS`,
+/// memory accounting, disk/network filters, GPU probing and `month_rotate`.
+pub fn monitor_options(config: &Config) -> MonitorOptions {
+    let mut options = MonitorOptions::from_monitor_config(
+        &config.host_proc,
+        config.memory_include_cache,
+        config.memory_report_raw_used,
+        &config.include_mountpoints,
+        &config.include_nics,
+        &config.exclude_nics,
+        config.month_rotate,
+        config.enable_gpu,
+    );
+
+    // `from_monitor_config` covers HOST_PROC; overlay the remaining env-driven
+    // paths exactly like `MonitorOptions::from_env_lookup`.
+    let env = MonitorOptions::from_env_lookup(&|key| std::env::var(key).ok());
+    options.sys_root = env.sys_root;
+    options.process_path = env.process_path;
+    options
+}
+
+/// Map configuration to the IP-only collector options.
+pub fn ip_options(config: &Config) -> IpOptions {
+    IpOptions {
+        include_nics: config.include_nics.clone(),
+        exclude_nics: config.exclude_nics.clone(),
+        custom_ipv4: config.custom_ipv4.clone(),
+        custom_ipv6: config.custom_ipv6.clone(),
+        get_ip_addr_from_nic: config.get_ip_addr_from_nic,
+    }
+}
+
+/// Build the DNS resolver shared by HTTP, discovery and WebSocket.
+pub fn resolver(config: &Config) -> Result<DnsResolver, RuntimeError> {
+    Ok(DnsResolver::new(ResolverConfig {
+        custom_dns: non_empty(&config.custom_dns),
+        prefer_ip: prefer_ip(config)?,
+        ..ResolverConfig::default()
+    })?)
+}
+
+fn prefer_ip(config: &Config) -> Result<PreferIp, RuntimeError> {
+    Ok(PreferIp::parse(&config.prefer_ip_version)?)
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    (!value.trim().is_empty()).then(|| value.trim().to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> Config {
+        Config {
+            token: "tok".to_owned(),
+            endpoint: "https://panel.example".to_owned(),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn client_options_clamp_intervals() {
+        let mut config = config();
+        config.info_report_interval = 0;
+        config.reconnect_interval = -5;
+        let options = client_options(&config);
+
+        assert_eq!(options.reconnect_interval, Duration::ZERO);
+        assert_eq!(options.info_report_interval, Duration::from_secs(60));
+        assert_eq!(options.max_retries, 3);
+    }
+
+    #[test]
+    fn monitor_and_ip_options_carry_filters() {
+        let mut config = config();
+        config.include_nics = "eth*".to_owned();
+        config.exclude_nics = "lo".to_owned();
+        config.enable_gpu = true;
+        config.month_rotate = 7;
+        config.include_mountpoints = "/;/data".to_owned();
+
+        let monitor = monitor_options(&config);
+        assert_eq!(monitor.include_nics, "eth*");
+        assert_eq!(monitor.exclude_nics, "lo");
+        assert!(monitor.enable_gpu);
+        assert_eq!(monitor.month_rotate, 7);
+        assert_eq!(monitor.include_mountpoints, "/;/data");
+
+        let ip = ip_options(&config);
+        assert_eq!(ip.include_nics, "eth*");
+        assert_eq!(ip.exclude_nics, "lo");
+    }
+
+    #[tokio::test]
+    async fn missing_credentials_are_rejected_before_any_request() {
+        let error = resolve_config(Config::default(), None, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::MissingCredentials));
+    }
+}

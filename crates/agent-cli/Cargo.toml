@@ -12,8 +12,20 @@ name = "komari-agent"
 path = "src/main.rs"
 
 [dependencies]
+agent-client = { path = "../agent-client" }
 agent-config = { path = "../agent-config" }
+agent-discovery = { path = "../agent-discovery" }
+agent-monitor = { path = "../agent-monitor" }
+agent-protocol = { path = "../agent-protocol" }
+agent-update = { path = "../agent-update" }
 anyhow.workspace = true
+async-trait.workspace = true
 clap.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
