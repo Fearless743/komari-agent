@@ -49,6 +49,9 @@ pub enum RuntimeError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunExit {
     Finished,
+    /// The v1 loop exhausted `max_retries`; the process exits non-zero so a
+    /// service manager with `Restart=on-failure` starts it again.
+    RetriesExhausted,
     Restart(i32),
 }
 
@@ -169,39 +172,70 @@ pub async fn resolve_config(
 /// Run the client and the optional update loop until one of them returns.
 pub async fn run_with(config: Config, deps: RuntimeDeps) -> Result<RunExit, RuntimeError> {
     let options = client_options(&config);
-    let uploader = Arc::new(BasicInfoUploader::new(
-        deps.http,
-        config.endpoint.clone(),
-        config.token.clone(),
-    ));
+    let uploader = Arc::new(
+        BasicInfoUploader::new(deps.http, config.endpoint.clone(), config.token.clone())
+            .with_access_headers(
+                config.cf_access_client_id.clone(),
+                config.cf_access_client_secret.clone(),
+            ),
+    );
     let client = AgentClient::new(options, deps.ws, uploader, deps.provider, deps.clock)?;
 
-    match deps.updater {
-        Some(updater) => {
-            tokio::select! {
-                _ = client.run() => Ok(RunExit::Finished),
-                code = run_update_loop(&updater) => match code {
-                    Some(code) => Ok(RunExit::Restart(code)),
-                    // No restart requested (for example the update loop was
-                    // cancelled or an unexpected error occurred): keep the
-                    // reporting loop alive.
-                    None => {
-                        let _ = client.run().await;
-                        Ok(RunExit::Finished)
-                    }
-                },
-            }
+    // Go performs one synchronous CheckAndUpdate before it starts the report
+    // loop, then checks again every six hours. An installed update must win
+    // over a panel that is temporarily refusing connections.
+    if let Some(updater) = deps.updater {
+        if let Some(code) = run_initial_update(&updater).await {
+            return Ok(RunExit::Restart(code));
         }
-        None => {
-            let _ = client.run().await;
-            Ok(RunExit::Finished)
+
+        let update_task = tokio::spawn(run_update_loop(updater));
+        tokio::select! {
+            outcome = client.run() => Ok(run_exit(outcome)),
+            code = update_task => match code {
+                Ok(Some(code)) => Ok(RunExit::Restart(code)),
+                // The periodic loop normally never returns. If it does
+                // without a restart request, keep reporting.
+                _ => Ok(run_exit(client.run().await)),
+            },
+        }
+    } else {
+        Ok(run_exit(client.run().await))
+    }
+}
+
+fn run_exit(outcome: agent_client::RunOutcome) -> RunExit {
+    match outcome {
+        agent_client::RunOutcome::RetriesExhausted => RunExit::RetriesExhausted,
+    }
+}
+
+/// One synchronous update check, matching Go's `update.CheckAndUpdate()` call
+/// before the report loop starts.
+pub async fn run_initial_update(updater: &Updater) -> Option<i32> {
+    match updater.check_and_update().await {
+        Ok(outcome) => outcome.exit_code(),
+        Err(err) => {
+            tracing::warn!(%err, "initial update check failed");
+            None
         }
     }
 }
 
 /// Drive `agent-update`'s periodic loop and translate the outcome to an exit
 /// code. Kept public so the CLI tests can exercise the same path as `main`.
-pub async fn run_update_loop(updater: &Updater) -> Option<i32> {
+pub async fn run_update_loop(updater: Arc<Updater>) -> Option<i32> {
+    run_update_loop_after(updater, CHECK_INTERVAL).await
+}
+
+/// Periodic update loop with an injectable first delay (tests use zero).
+pub async fn run_update_loop_after(updater: Arc<Updater>, delay: Duration) -> Option<i32> {
+    // Go's DoUpdateWorks uses a six-hour ticker; the initial check already ran
+    // synchronously in `run_with`.
+    if !delay.is_zero() {
+        tokio::time::sleep(delay).await;
+    }
+
     match updater.run_periodic(CHECK_INTERVAL, || false).await {
         Ok(Some(outcome)) => outcome.exit_code(),
         Ok(None) => None,

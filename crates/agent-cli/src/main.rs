@@ -119,6 +119,7 @@ fn run_agent(overrides: CliOverrides) -> ExitCode {
 
     match runtime.block_on(run(config)) {
         Ok(RunExit::Finished) => ExitCode::SUCCESS,
+        Ok(RunExit::RetriesExhausted) => ExitCode::FAILURE,
         Ok(RunExit::Restart(code)) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         Err(error) => {
             eprintln!("Error: {error}");
@@ -200,5 +201,10 @@ mod tests {
 
         let cli = Cli::try_parse_from(["komari-agent", "list-disk"]).unwrap();
         assert!(matches!(cli.command, Some(Command::ListDisk)));
+
+        let cli = Cli::try_parse_from(["komari-agent", "--disable-auto-update=false"]).unwrap();
+        assert_eq!(cli.config.disable_auto_update, Some(false));
+        let cli = Cli::try_parse_from(["komari-agent", "--disable-auto-update"]).unwrap();
+        assert_eq!(cli.config.disable_auto_update, Some(true));
     }
 }

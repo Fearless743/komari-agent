@@ -6,7 +6,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use agent_client::list_partitions;
+use agent_client::{list_partitions, monitoring_mountpoints};
 use agent_monitor::{MemoryMode, read_meminfo};
 
 /// Run `check-mem` against the configured proc root.
@@ -45,12 +45,8 @@ pub fn check_mem(
             info.mem_total,
             info.mem_total.saturating_sub(info.available()),
         )?;
-        write_mode(
-            out,
-            MemoryMode::IncludeCache,
-            info.mem_total,
-            info.mem_total.saturating_sub(info.mem_free),
-        )?;
+        let (call_free_total, call_free_used) = call_free();
+        write_mode_str(out, "callFree", call_free_total, call_free_used)?;
     } else {
         writeln!(out, "failed to read {}/meminfo", proc_root.display())?;
     }
@@ -81,15 +77,52 @@ fn write_mib(out: &mut impl Write, label: &str, bytes: u64) -> io::Result<()> {
 }
 
 fn write_mode(out: &mut impl Write, mode: MemoryMode, total: u64, used: u64) -> io::Result<()> {
+    write_mode_str(out, mode.as_str(), total, used)
+}
+
+fn write_mode_str(out: &mut impl Write, mode: &str, total: u64, used: u64) -> io::Result<()> {
     writeln!(
         out,
         "[{}] Total: {} bytes ({} MiB), Used: {} bytes ({} MiB)",
-        mode.as_str(),
+        mode,
         total,
         total / 1024 / 1024,
         used,
         used / 1024 / 1024
     )
+}
+
+/// Port of Go's `monitoring.CallFree()`: parse `free -b` on Linux/FreeBSD.
+fn call_free() -> (u64, u64) {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        let Ok(output) = std::process::Command::new("free").arg("-b").output() else {
+            return (0, 0);
+        };
+        if !output.status.success() {
+            return (0, 0);
+        }
+        parse_free_b(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    (0, 0)
+}
+
+fn parse_free_b(output: &str) -> (u64, u64) {
+    for line in output.lines().skip(1) {
+        let Some(rest) = line.strip_prefix("Mem:") else {
+            continue;
+        };
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        if fields.len() >= 2 {
+            let total = fields[0].parse::<u64>().unwrap_or(0);
+            let used = fields[1].parse::<u64>().unwrap_or(0);
+            return (total, used);
+        }
+        break;
+    }
+    (0, 0)
 }
 
 /// Run `list-disk` against the configured proc root.
@@ -106,21 +139,8 @@ pub fn list_disk(
         writeln!(out, "{}\t{}", partition.mountpoint, partition.fstype)?;
     }
 
-    let monitored: Vec<String> = if include_mountpoints.trim().is_empty() {
-        partitions
-            .iter()
-            .map(|partition| partition.mountpoint.clone())
-            .collect()
-    } else {
-        include_mountpoints
-            .split(';')
-            .map(str::trim)
-            .filter(|mountpoint| !mountpoint.is_empty())
-            .map(str::to_owned)
-            .collect()
-    };
-
-    writeln!(out, "Monitoring Mountpoints: {monitored:?}")?;
+    let monitored = monitoring_mountpoints(proc_root, include_mountpoints).unwrap_or_default();
+    writeln!(out, "Monitoring Mountpoints: [{}]", monitored.join(" "))?;
     Ok(())
 }
 
@@ -155,7 +175,15 @@ mod tests {
         assert!(text.contains("MemTotal: 2 MiB"));
         assert!(text.contains("MemAvailable: 1 MiB"));
         assert!(text.contains("[htoplike]"));
+        assert!(text.contains("[callFree]"));
         assert!(text.contains("--- Current Configured ---"));
+    }
+
+    #[test]
+    fn call_free_parses_the_mem_line() {
+        let output = "               total        used        free\nMem:     16384000000  4096000000  8192000000\nSwap:             0           0           0\n";
+        assert_eq!(parse_free_b(output), (16384000000, 4096000000));
+        assert_eq!(parse_free_b(""), (0, 0));
     }
 
     #[test]
@@ -173,7 +201,7 @@ mod tests {
 
         assert!(text.contains("All Disk Partitions:"));
         assert!(text.contains("/mnt/data disk\tfuseblk"));
-        assert!(text.contains("Monitoring Mountpoints: [\"/\", \"/mnt/data disk\"]"));
+        assert!(text.contains("Monitoring Mountpoints: [/ /mnt/data disk]"));
     }
 
     #[test]
