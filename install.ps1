@@ -172,11 +172,12 @@ $AgentPath = Join-Path $InstallDir 'komari-agent.exe'
 # Elevation / architecture
 # ---------------------------------------------------------------------------
 
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-    [Security.Principal.WindowsBuiltinRole]::Administrator)
-
-if (-not $isAdmin -and -not $DryRun) {
-    Fail 'Please run this script as Administrator.'
+if (-not $DryRun) {
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltinRole]::Administrator)
+    if (-not $isAdmin) {
+        Fail 'Please run this script as Administrator.'
+    }
 }
 
 $archRaw = $env:PROCESSOR_ARCHITECTURE
