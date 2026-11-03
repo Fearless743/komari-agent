@@ -159,6 +159,7 @@ fn include_mountpoints_sums_only_the_listed_paths() {
     assert!(both.used >= only_a.used);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn pid_one_mountinfo_takes_priority_over_mounts() {
     let fixture = Fixture::new();

@@ -132,7 +132,8 @@ root 下 `pveversion` 的全局 `PATH` 回退，可读取 `PATH` 并调用 `with
 启用 `strict_proc`。此时 proc 读取失败返回空值/未知值（CPU 为 `Unknown`、1 核），
 而不是悄悄改用容器自身的 `sysinfo` 数据。失败时首次会通过 `tracing::warn!` 输出一条告警。
 
-未配置 `HOST_PROC` 时默认 `strict_proc = false`，proc 不可读会回退本机 `sysinfo`。
+未配置 `HOST_PROC` 时默认 `strict_proc = false`，CPU/内存/Swap/负载/uptime 等 proc
+读取失败会回退本机 `sysinfo`（磁盘挂载表与连接数除外，见下文）。
 可用 `with_strict_proc(true/false)` 显式覆盖。
 
 与 Go 的差异：Go 的内存/Swap 采集直接硬编码 `/proc`（不经过 `HOST_PROC` 参数），
@@ -181,7 +182,7 @@ strict 模式行为与之对齐，非 strict 模式则提供本机回退。
   `tmpfs`/`overlay`/`fuse` 等伪文件系统、网络盘与 `/dev/loop*`；`/` 永远保留。
 - 同一设备只统计一次，保留 `total` 更大的挂载点；ZFS dataset 归并到 pool。
 - `total`/`used` 来自 `statvfs`，`used = total - f_bfree * f_frsize`（与 gopsutil 一致）。
-- 非 Linux 与 proc 不可读的非 strict 模式使用 `sysinfo`。
+- 非 Linux 使用 `sysinfo`；Linux 挂载表不可读返回 0（include 也不例外）。
 
 ## 网络与月流量
 

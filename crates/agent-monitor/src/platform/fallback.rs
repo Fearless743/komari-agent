@@ -106,8 +106,9 @@ pub(crate) fn uptime() -> u64 {
 
 /// Partition table and usage from `sysinfo`.
 ///
-/// Used on non-Linux platforms and as the local fallback when the injected
-/// proc mount has no readable mount table.
+/// Used only on non-Linux platforms. Linux reads the injected mount table and
+/// returns zero when it is unreadable, matching Go's `disk.Partitions`; it does
+/// not fall back to local `sysinfo` disks.
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn disk_partitions() -> Option<Vec<(crate::disk::PartitionStat, crate::disk::DiskUsage)>>
 {
