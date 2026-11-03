@@ -78,9 +78,10 @@ let options = MonitorOptions::from_config(
 );
 ```
 
-本 crate 不会自行解析配置环境变量。唯一例外是 `pveversion` 的 `PATH` 查找：未注入
-`process_path` 时会读取进程 `PATH`。可通过 `with_process_path()` 或
-`from_env_lookup()`（读取 `PATH`）显式注入，避免依赖全局环境。
+本 crate 不会自行解析配置环境变量。唯一例外是 **默认 root（`/`）** 下 `pveversion`
+的 `PATH` 查找：未注入 `process_path` 时会读取进程 `PATH`。使用注入 root 时不会读取
+宿主 `PATH`，只接受 `<root>/usr/bin/pveversion` 或显式注入的 `process_path`。可通过
+`with_process_path()` 或 `from_env_lookup()`（读取 `PATH`）显式注入，避免依赖全局环境。
 
 独立使用时可使用注入式查找（识别 `HOST_PROC`、`HOST_SYS` 与 `PATH`）：
 
@@ -103,10 +104,10 @@ let options = MonitorOptions::default()
 ### A05 接线：HOST_SYS 与 PATH
 
 `agent-config` 目前只有 `host_proc` 字段。A05 接线时如果需要宿主机 sysfs（物理核心
-topology / DMI），必须自行读取 `HOST_SYS` 并调用 `with_sys_root()`；如需避免
-`pveversion` 的全局 `PATH` 回退，可读取 `PATH` 并调用 `with_process_path()`。本 crate
-除该 `PATH` 回退外不直接读取全局环境变量。大多数容器中默认 `/sys` 已反映宿主机拓扑，
-未设置 `HOST_SYS` 时可保持默认。
+topology / DMI），必须自行读取 `HOST_SYS` 并调用 `with_sys_root()`；如需避免默认
+root 下 `pveversion` 的全局 `PATH` 回退，可读取 `PATH` 并调用 `with_process_path()`。
+本 crate 除该默认-root `PATH` 回退外不直接读取全局环境变量。大多数容器中默认 `/sys`
+已反映宿主机拓扑，未设置 `HOST_SYS` 时可保持默认。
 
 ### strict_proc 的边界
 
