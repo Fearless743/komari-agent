@@ -198,6 +198,27 @@ if (-not $arch) {
 # Configuration file
 # ---------------------------------------------------------------------------
 
+function Set-PathAcl {
+    param(
+        [string]$Path,
+        [switch]$Directory
+    )
+
+    if ($Directory) {
+        $icaclsArgs = @($Path, '/inheritance:r', '/grant:r',
+            '*S-1-5-18:(OI)(CI)(F)', '*S-1-5-32-544:(OI)(CI)(F)')
+    }
+    else {
+        $icaclsArgs = @($Path, '/inheritance:r', '/grant:r',
+            '*S-1-5-18:(F)', '*S-1-5-32-544:(F)')
+    }
+
+    & icacls @icaclsArgs 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Fail "icacls failed for $Path (exit code $LASTEXITCODE)"
+    }
+}
+
 function Write-AgentConfig {
     param(
         [string]$EndpointValue,
@@ -216,9 +237,9 @@ function Write-AgentConfig {
         protocol_version     = 1
     }
 
-    if (Test-Path $ConfigPath) {
+    if (Test-Path -LiteralPath $ConfigPath) {
         try {
-            $existing = Get-Content -Raw -Path $ConfigPath | ConvertFrom-Json
+            $existing = Get-Content -Raw -LiteralPath $ConfigPath | ConvertFrom-Json
             foreach ($property in $existing.PSObject.Properties) {
                 $config[$property.Name] = $property.Value
             }
@@ -232,13 +253,29 @@ function Write-AgentConfig {
     if ($TokenValue) { $config['token'] = $TokenValue }
     if ($IntervalValue) { $config['interval'] = [double]$IntervalValue }
 
-    $json = $config | ConvertTo-Json -Depth 10
-    $utf8 = New-Object System.Text.UTF8Encoding -ArgumentList $false
-    [System.IO.File]::WriteAllText($ConfigPath, $json, $utf8)
+    $configDirectory = Split-Path -Parent $ConfigPath
+    if ($configDirectory) {
+        [System.IO.Directory]::CreateDirectory($configDirectory) | Out-Null
+    }
 
-    # Restrict the file to SYSTEM and Administrators. SIDs are used so the
-    # command works on non-English Windows installations.
-    & icacls $ConfigPath /inheritance:r /grant:r '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' 2>&1 | Out-Null
+    $json = $config | ConvertTo-Json -Depth 10
+    # Validate the serialized form before touching the existing file.
+    $null = $json | ConvertFrom-Json
+
+    $utf8 = New-Object System.Text.UTF8Encoding -ArgumentList $false
+    $tempConfig = "$ConfigPath.tmp.$PID"
+    try {
+        [System.IO.File]::WriteAllText($tempConfig, $json, $utf8)
+        Set-PathAcl -Path $tempConfig
+        Move-Item -LiteralPath $tempConfig -Destination $ConfigPath -Force
+        Set-PathAcl -Path $ConfigPath
+    }
+    catch {
+        if (Test-Path -LiteralPath $tempConfig) {
+            Remove-Item -LiteralPath $tempConfig -Force -ErrorAction SilentlyContinue
+        }
+        Fail "Failed to write $ConfigPath`: $_"
+    }
 
     if (-not $config['endpoint'] -or -not $config['token']) {
         Write-WarningLog "endpoint and/or token are not set; edit $ConfigPath before starting the agent."
@@ -246,16 +283,26 @@ function Write-AgentConfig {
     Write-Success "Configuration written to $ConfigPath"
 }
 
-# ---------------------------------------------------------------------------
-# nssm handling
-# ---------------------------------------------------------------------------
+function Test-NssmExecutable {
+    param([string]$Path)
+
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
+        return $false
+    }
+    & $Path version 2>&1 | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
 
 function Get-NssmIfAvailable {
     $cmd = Get-Command nssm -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
+    if ($cmd -and (Test-NssmExecutable -Path $cmd.Source)) {
+        return $cmd.Source
+    }
 
     $local = Join-Path $InstallDir 'nssm.exe'
-    if (Test-Path $local) { return $local }
+    if (Test-NssmExecutable -Path $local) {
+        return $local
+    }
 
     return $null
 }
@@ -277,21 +324,26 @@ function Install-Nssm {
 
     try {
         Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
-        if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
-        New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+        if (Test-Path -LiteralPath $extractDir) {
+            Remove-Item -LiteralPath $extractDir -Recurse -Force
+        }
+        [System.IO.Directory]::CreateDirectory($extractDir) | Out-Null
         Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
 
         $source = Join-Path $extractDir "nssm-$nssmVersion\win32\nssm.exe"
-        if (-not (Test-Path $source)) {
-            $fallback = Get-ChildItem -Path $extractDir -Recurse -Filter 'nssm.exe' |
+        if (-not (Test-Path -LiteralPath $source)) {
+            $fallback = Get-ChildItem -LiteralPath $extractDir -Recurse -Filter 'nssm.exe' |
                 Select-Object -First 1
             if ($fallback) { $source = $fallback.FullName }
         }
-        if (-not (Test-Path $source)) {
+        if (-not (Test-Path -LiteralPath $source)) {
             Fail "Could not find nssm.exe in $extractDir. Install nssm from https://nssm.cc and retry."
         }
 
-        Copy-Item -Path $source -Destination $local -Force
+        Copy-Item -LiteralPath $source -Destination $local -Force
+        if (-not (Test-NssmExecutable -Path $local)) {
+            Fail "Downloaded nssm at $local is not executable. Install nssm from https://nssm.cc and retry."
+        }
         Write-Success "nssm installed to $local"
         return $local
     }
@@ -299,40 +351,106 @@ function Install-Nssm {
         Fail "Failed to download nssm: $_`nInstall nssm manually from https://nssm.cc and retry."
     }
     finally {
-        if (Test-Path $zipPath) { Remove-Item -Force $zipPath -ErrorAction SilentlyContinue }
-        if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $zipPath) {
+            Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $extractDir) {
+            Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
-# ---------------------------------------------------------------------------
-# Service management
-# ---------------------------------------------------------------------------
+function Wait-ServiceStopped {
+    param([string]$Name)
+
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+        $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
+        if (-not $service -or $service.Status -eq 'Stopped') {
+            return $true
+        }
+        Start-Sleep -Seconds 1
+    }
+    return $false
+}
+
+function Remove-ServiceWithSc {
+    param([string]$Name)
+
+    $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if (-not $service) { return }
+
+    Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue
+    if (-not (Wait-ServiceStopped -Name $Name)) {
+        Fail "Service $Name did not stop within 30 seconds"
+    }
+
+    & sc.exe delete $Name 2>&1 | Out-Null
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
+        if (-not (Get-Service -Name $Name -ErrorAction SilentlyContinue)) {
+            return
+        }
+        Start-Sleep -Seconds 1
+    }
+    Fail "Failed to remove service $Name with sc.exe"
+}
 
 function Stop-PreviousService {
     param([string]$Nssm)
 
     Write-Step 'Checking for a previous installation...'
 
-    if ($Nssm -and (Test-Path $Nssm)) {
-        & $Nssm status $ServiceName 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Info "Stopping and removing service $ServiceName..."
-            & $Nssm stop $ServiceName 2>&1 | Out-Null
-            & $Nssm remove $ServiceName confirm 2>&1 | Out-Null
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($service) {
+        if ($service.Status -ne 'Stopped') {
+            Write-Info "Stopping service $ServiceName..."
+            if ($Nssm -and (Test-Path -LiteralPath $Nssm)) {
+                & $Nssm stop $ServiceName 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    Fail "nssm stop failed for $ServiceName (exit code $LASTEXITCODE)"
+                }
+            }
+            else {
+                Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+            }
+            if (-not (Wait-ServiceStopped -Name $ServiceName)) {
+                Fail "Service $ServiceName is still running after stop"
+            }
         }
-    }
-    else {
-        $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-        if ($service) {
-            Write-Info "Stopping and removing service $ServiceName with sc.exe..."
-            Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-            & sc.exe delete $ServiceName 2>&1 | Out-Null
+
+        Write-Info "Removing service $ServiceName..."
+        if ($Nssm -and (Test-Path -LiteralPath $Nssm)) {
+            & $Nssm remove $ServiceName confirm 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-WarningLog "nssm remove failed; falling back to sc.exe delete"
+                Remove-ServiceWithSc -Name $ServiceName
+            }
+        }
+        else {
+            Remove-ServiceWithSc -Name $ServiceName
+        }
+
+        if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
+            Fail "Service $ServiceName still exists after removal"
         }
     }
 
-    if (Test-Path $AgentPath) {
+    if (Test-Path -LiteralPath $AgentPath) {
         Write-Info "Removing old binary $AgentPath"
-        Remove-Item -Path $AgentPath -Force
+        Remove-Item -LiteralPath $AgentPath -Force
+    }
+}
+
+function Set-NssmValue {
+    param(
+        [string]$Nssm,
+        [string]$Name,
+        [string]$Key,
+        [string[]]$Value
+    )
+
+    & $Nssm set $Name $Key @Value 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Fail "nssm set $Key failed for $Name (exit code $LASTEXITCODE)"
     }
 }
 
@@ -349,31 +467,28 @@ function Install-AgentService {
     & $Nssm install $ServiceName $AgentPath
     if ($LASTEXITCODE -ne 0) { Fail "nssm install failed with exit code $LASTEXITCODE" }
 
-    & $Nssm set $ServiceName AppDirectory $InstallDir | Out-Null
-    & $Nssm set $ServiceName AppParameters $parameterString | Out-Null
-    & $Nssm set $ServiceName DisplayName 'Komari Agent Service' | Out-Null
-    & $Nssm set $ServiceName Start SERVICE_AUTO_START | Out-Null
-    & $Nssm set $ServiceName AppExit Default Restart | Out-Null
-    & $Nssm set $ServiceName AppRestartDelay 5000 | Out-Null
-    & $Nssm set $ServiceName AppStdout (Join-Path $InstallDir 'komari-agent.log') | Out-Null
-    & $Nssm set $ServiceName AppStderr (Join-Path $InstallDir 'komari-agent.log') | Out-Null
-    & $Nssm set $ServiceName AppRotateFiles 1 | Out-Null
-    & $Nssm set $ServiceName AppRotateOnline 1 | Out-Null
-    & $Nssm set $ServiceName AppRotateBytes 10485760 | Out-Null
+    Set-NssmValue -Nssm $Nssm -Name $ServiceName -Key 'AppDirectory' -Value @($InstallDir)
+    Set-NssmValue -Nssm $Nssm -Name $ServiceName -Key 'AppParameters' -Value @($parameterString)
+    Set-NssmValue -Nssm $Nssm -Name $ServiceName -Key 'DisplayName' -Value @('Komari Agent Service')
+    Set-NssmValue -Nssm $Nssm -Name $ServiceName -Key 'Start' -Value @('SERVICE_AUTO_START')
+    Set-NssmValue -Nssm $Nssm -Name $ServiceName -Key 'AppExit' -Value @('Default', 'Restart')
+    Set-NssmValue -Nssm $Nssm -Name $ServiceName -Key 'AppRestartDelay' -Value @('5000')
+    Set-NssmValue -Nssm $Nssm -Name $ServiceName -Key 'AppStdout' -Value @((Join-Path $InstallDir 'komari-agent.log'))
+    Set-NssmValue -Nssm $Nssm -Name $ServiceName -Key 'AppStderr' -Value @((Join-Path $InstallDir 'komari-agent.log'))
+    Set-NssmValue -Nssm $Nssm -Name $ServiceName -Key 'AppRotateFiles' -Value @('1')
+    Set-NssmValue -Nssm $Nssm -Name $ServiceName -Key 'AppRotateOnline' -Value @('1')
+    Set-NssmValue -Nssm $Nssm -Name $ServiceName -Key 'AppRotateBytes' -Value @('10485760')
+
     & $Nssm start $ServiceName
     if ($LASTEXITCODE -ne 0) { Fail "nssm start failed with exit code $LASTEXITCODE" }
 
     Write-Success "Service $ServiceName installed and started."
 }
 
-# ---------------------------------------------------------------------------
-# Uninstall
-# ---------------------------------------------------------------------------
-
 function Uninstall-Agent {
     param([string]$Nssm)
 
-    if ($Nssm -and (Test-Path $Nssm)) {
+    if ($Nssm -and (Test-Path -LiteralPath $Nssm)) {
         Write-Info "Using nssm at $Nssm"
     }
     else {
@@ -384,17 +499,17 @@ function Uninstall-Agent {
 
     if ($Purge) {
         Write-Info 'Removing configuration and state files...'
-        if (Test-Path $ConfigPath) { Remove-Item -Path $ConfigPath -Force }
+        if (Test-Path -LiteralPath $ConfigPath) {
+            Remove-Item -LiteralPath $ConfigPath -Force
+        }
         $discovery = Join-Path $InstallDir 'auto-discovery.json'
-        if (Test-Path $discovery) { Remove-Item -Path $discovery -Force }
+        if (Test-Path -LiteralPath $discovery) {
+            Remove-Item -LiteralPath $discovery -Force
+        }
     }
 
     Write-Success 'Komari Agent uninstalled.'
 }
-
-# ---------------------------------------------------------------------------
-# Download
-# ---------------------------------------------------------------------------
 
 function Resolve-ReleaseVersion {
     if ($InstallVersion) {
@@ -409,7 +524,8 @@ function Resolve-ReleaseVersion {
         return $release.tag_name
     }
     catch {
-        Fail "Failed to fetch the latest release: $_"
+        Write-WarningLog "Failed to fetch the latest release: $_; using the latest/download URL"
+        return 'latest'
     }
 }
 
@@ -417,7 +533,12 @@ function Get-DownloadUrl {
     param([string]$Version)
 
     $asset = "komari-agent-windows-$arch.exe"
-    $base = "https://github.com/$Repo/releases/download/$Version/$asset"
+    if (-not $Version -or $Version -eq 'latest') {
+        $base = "https://github.com/$Repo/releases/latest/download/$asset"
+    }
+    else {
+        $base = "https://github.com/$Repo/releases/download/$Version/$asset"
+    }
     if ($GitHubProxy) {
         $base = "$($GitHubProxy.TrimEnd('/'))/$base"
     }
@@ -460,7 +581,8 @@ if ($Uninstall) {
 }
 
 if (-not $DryRun) {
-    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    [System.IO.Directory]::CreateDirectory($InstallDir) | Out-Null
+    Set-PathAcl -Path $InstallDir -Directory
 }
 
 if ($DryRun) {
@@ -468,12 +590,13 @@ if ($DryRun) {
     Write-Info "[dry-run] would ensure installation directory: $InstallDir"
     Write-Info '[dry-run] would download nssm if it is not available'
     if ($InstallVersion) {
-        $version = $InstallVersion
+        $dryVersion = $InstallVersion
     }
     else {
-        $version = '<latest release tag>'
+        $dryVersion = 'latest'
     }
-    Write-Info "[dry-run] would install komari-agent $version from https://github.com/$Repo/releases"
+    $dryUrl = Get-DownloadUrl -Version $dryVersion
+    Write-Info "[dry-run] would download $dryUrl"
     Write-Info "[dry-run] would write config: $ConfigPath"
     if ($Token) { Write-Info '[dry-run] token: ******' }
     Write-Info "[dry-run] would register service $ServiceName with nssm"
@@ -493,17 +616,19 @@ try {
     Invoke-WebRequest -Uri $downloadUrl -OutFile $tempPath -UseBasicParsing
 }
 catch {
-    if (Test-Path $tempPath) { Remove-Item -Force $tempPath -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $tempPath) {
+        Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+    }
     Fail "Download failed: $_"
 }
 
 Stop-PreviousService -Nssm $NssmPath
 
-Move-Item -Path $tempPath -Destination $AgentPath -Force
+Move-Item -LiteralPath $tempPath -Destination $AgentPath -Force
 Write-Success "komari-agent installed to $AgentPath"
 
 if ($ConfigExplicit) {
-    if (-not (Test-Path $ConfigPath)) {
+    if (-not (Test-Path -LiteralPath $ConfigPath)) {
         Write-WarningLog "Config file $ConfigPath does not exist; the agent will fail to start until it is created."
     }
     Write-Info "Using existing config file: $ConfigPath"
