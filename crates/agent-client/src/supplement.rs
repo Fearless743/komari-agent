@@ -74,8 +74,11 @@ pub struct SupplementSnapshot {
     pub gpu_name: String,
     pub ipv4: String,
     pub ipv6: String,
-    /// Diagnostics appended to `ReportV1::message`, mirroring Go.
-    pub message: String,
+    /// Errors are returned separately so the provider can append them in Go's
+    /// order: network, connections, uptime, GPU.
+    pub network_error: Option<String>,
+    pub connections_error: Option<String>,
+    pub gpu_error: Option<String>,
 }
 
 /// Fields used by the basic information upload.
@@ -125,8 +128,6 @@ impl SystemSupplement {
         previous: Option<NetworkTotals>,
         elapsed: Duration,
     ) -> SupplementSnapshot {
-        let mut message = String::new();
-
         // Take the second counter sample immediately after the CPU window,
         // before any potentially slow disk probing, so the rate divisor and
         // the counters describe the same interval.
@@ -134,6 +135,10 @@ impl SystemSupplement {
 
         // Go ignores disk errors (it reports zero usage silently).
         let disk = disk::usage(&self.options).unwrap_or_default();
+
+        let mut network_error = None;
+        let mut connections_error = None;
+        let mut gpu_error = None;
 
         let network = match (previous, network_result) {
             (Some(start), Ok(end)) => network_sample(start, end, elapsed),
@@ -143,7 +148,7 @@ impl SystemSupplement {
                 ..NetworkSample::default()
             },
             (_, Err(error)) => {
-                message.push_str(&format!("failed to get network speed: {error}\n"));
+                network_error = Some(error);
                 NetworkSample::default()
             }
         };
@@ -151,7 +156,7 @@ impl SystemSupplement {
         let connections = match connections::count(&self.options) {
             Ok(count) => count,
             Err(error) => {
-                message.push_str(&format!("failed to get connections: {error}\n"));
+                connections_error = Some(error);
                 ConnectionSample::default()
             }
         };
@@ -168,7 +173,7 @@ impl SystemSupplement {
                 }
                 Ok(_) => gpu_models_report(models.clone()),
                 Err(error) => {
-                    message.push_str(&format!("failed to get detailed GPU info: {error}\n"));
+                    gpu_error = Some(error);
                     gpu_models_report(models.clone())
                 }
             }
@@ -187,7 +192,9 @@ impl SystemSupplement {
             gpu_name,
             ipv4,
             ipv6,
-            message,
+            network_error,
+            connections_error,
+            gpu_error,
         }
     }
 
@@ -738,33 +745,11 @@ mod ip {
     use super::*;
 
     pub(super) fn addresses(options: &SupplementOptions) -> (String, String) {
-        let mut nic_ipv4 = String::new();
-        let mut nic_ipv6 = String::new();
-
-        if options.get_ip_addr_from_nic
-            && let Ok(interfaces) = if_addrs::get_if_addrs()
-        {
-            for interface in interfaces {
-                if !nic_selected(options, &interface.name) || !interface.is_oper_up() {
-                    continue;
-                }
-                match interface.ip() {
-                    std::net::IpAddr::V4(address) => {
-                        if nic_ipv4.is_empty() && !address.is_loopback() {
-                            nic_ipv4 = address.to_string();
-                        }
-                    }
-                    std::net::IpAddr::V6(address) => {
-                        if nic_ipv6.is_empty()
-                            && !address.is_loopback()
-                            && !address.is_unicast_link_local()
-                        {
-                            nic_ipv6 = address.to_string();
-                        }
-                    }
-                }
-            }
-        }
+        let (nic_ipv4, nic_ipv6) = if options.get_ip_addr_from_nic {
+            nic_addresses(options)
+        } else {
+            (String::new(), String::new())
+        };
 
         select_addresses(
             &options.custom_ipv4,
@@ -787,8 +772,107 @@ mod ip {
         }
         (custom_ipv4.to_owned(), custom_ipv6.to_owned())
     }
-}
 
+    #[cfg(unix)]
+    fn nic_addresses(options: &SupplementOptions) -> (String, String) {
+        use std::ffi::CStr;
+        use std::net::{Ipv4Addr, Ipv6Addr};
+
+        let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+        // SAFETY: getifaddrs either fails without touching `head` or returns a
+        // linked list released exactly once with freeifaddrs.
+        if unsafe { libc::getifaddrs(&mut head) } != 0 {
+            return (String::new(), String::new());
+        }
+
+        let mut ipv4 = String::new();
+        let mut ipv6 = String::new();
+        let mut current = head;
+
+        while !current.is_null() {
+            // SAFETY: `current` is a valid node from the getifaddrs list.
+            let entry = unsafe { &*current };
+
+            if !entry.ifa_addr.is_null() {
+                // SAFETY: ifa_name is a NUL-terminated string owned by the
+                // ifaddrs entry for the duration of the list.
+                let name = unsafe { CStr::from_ptr(entry.ifa_name) }.to_string_lossy();
+                // SAFETY: ifa_addr points to a sockaddr whose family decides
+                // which concrete layout is valid.
+                let family = unsafe { (*entry.ifa_addr).sa_family as i32 };
+
+                if nic_selected(options, &name)
+                    && interface_flags_allow_ip(entry.ifa_flags as libc::c_uint)
+                {
+                    if family == libc::AF_INET {
+                        // SAFETY: AF_INET guarantees sockaddr_in layout.
+                        let sockaddr = unsafe { &*(entry.ifa_addr as *const libc::sockaddr_in) };
+                        let address = Ipv4Addr::from(u32::from_be(sockaddr.sin_addr.s_addr));
+                        if ipv4.is_empty() && !address.is_loopback() {
+                            ipv4 = address.to_string();
+                        }
+                    } else if family == libc::AF_INET6 {
+                        // SAFETY: AF_INET6 guarantees sockaddr_in6 layout.
+                        let sockaddr = unsafe { &*(entry.ifa_addr as *const libc::sockaddr_in6) };
+                        let address = Ipv6Addr::from(sockaddr.sin6_addr.s6_addr);
+                        if ipv6.is_empty()
+                            && !address.is_loopback()
+                            && !address.is_unicast_link_local()
+                        {
+                            ipv6 = address.to_string();
+                        }
+                    }
+                }
+            }
+
+            current = entry.ifa_next;
+        }
+
+        // SAFETY: head was returned by getifaddrs and is released once.
+        unsafe { libc::freeifaddrs(head) };
+        (ipv4, ipv6)
+    }
+
+    #[cfg(not(unix))]
+    fn nic_addresses(options: &SupplementOptions) -> (String, String) {
+        let mut ipv4 = String::new();
+        let mut ipv6 = String::new();
+
+        if let Ok(interfaces) = if_addrs::get_if_addrs() {
+            for interface in interfaces {
+                if !nic_selected(options, &interface.name) || !interface.is_oper_up() {
+                    continue;
+                }
+                match interface.ip() {
+                    std::net::IpAddr::V4(address) => {
+                        if ipv4.is_empty() && !address.is_loopback() {
+                            ipv4 = address.to_string();
+                        }
+                    }
+                    std::net::IpAddr::V6(address) => {
+                        if ipv6.is_empty()
+                            && !address.is_loopback()
+                            && !address.is_unicast_link_local()
+                        {
+                            ipv6 = address.to_string();
+                        }
+                    }
+                }
+            }
+        }
+
+        (ipv4, ipv6)
+    }
+
+    /// Go uses `net.FlagUp` (IFF_UP), not IFF_RUNNING. An administratively up
+    /// interface without carrier is still eligible.
+    #[cfg(unix)]
+    pub(super) fn interface_flags_allow_ip(flags: libc::c_uint) -> bool {
+        let up = libc::IFF_UP as libc::c_uint;
+        let loopback = libc::IFF_LOOPBACK as libc::c_uint;
+        (flags & up) != 0 && (flags & loopback) == 0
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -854,6 +938,19 @@ mod tests {
             ip::select_addresses("custom4", "custom6", String::new(), String::new()),
             ("custom4".to_owned(), "custom6".to_owned())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn iff_up_without_running_still_counts() {
+        let up = libc::IFF_UP as libc::c_uint;
+        let running = libc::IFF_RUNNING as libc::c_uint;
+        let loopback = libc::IFF_LOOPBACK as libc::c_uint;
+
+        assert!(ip::interface_flags_allow_ip(up));
+        assert!(ip::interface_flags_allow_ip(up | running));
+        assert!(!ip::interface_flags_allow_ip(running));
+        assert!(!ip::interface_flags_allow_ip(up | loopback));
     }
 
     #[test]

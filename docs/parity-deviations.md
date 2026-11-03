@@ -196,13 +196,16 @@ systemd `Restart=on-failure` 不重启，因此改为 1。
 
 - **Go**：`GetIPAddress` 的优先级是：启用 `get_ip_addr_from_nic` 且取到地址时直接返回；
   否则使用 `custom_ipv4`/`custom_ipv6`；两者都没有时请求 visa.cn、ipify 等外部服务。
-- **Rust**：保留 NIC 优先（`is_oper_up` + 非回环 + 非链路本地）和 custom 次之的优先级，
-  但**不请求外部 IP 服务**；未配置 NIC/custom 时基础信息中的 `ipv4`/`ipv6` 为空字符串。
+- **Rust**：保留 NIC 优先和 custom 次之的优先级，但**不请求外部 IP 服务**；
+  未配置 NIC/custom 时基础信息中的 `ipv4`/`ipv6` 为空字符串。
+  - Unix：用 `getifaddrs` + `IFF_UP`（不含 `IFF_RUNNING`）判断接口可用，排除回环接口、
+    回环地址和 IPv6 链路本地地址，与 Go `net.FlagUp` 语义一致；
+  - 非 Unix：`if-addrs::is_oper_up()` 只是近似（另见 D-011）。
 
 原因：避免 agent 在启动/基础信息上报时产生额外的外网依赖和隐私泄露；容器与内网部署
 通常更希望由 `custom_ipv4`/`custom_ipv6` 或网卡地址决定。
 影响：依赖公网出口 IP 自动识别的部署需要在配置中显式设置 `custom_ipv4`/`custom_ipv6`，
-或启用 `get_ip_addr_from_nic`。`if-addrs` 在非 Unix 平台的 `is_oper_up` 是近似值（另见 D-011）。
+或启用 `get_ip_addr_from_nic`。
 
 ## D-021 WebSocket 不走 HTTP(S)_PROXY，也不启用 permessage-deflate
 
@@ -223,3 +226,13 @@ systemd `Restart=on-failure` 不重启，因此改为 1。
 
 原因：netstatic 的持久化/月度滚动属于独立功能，A05 未包含。
 影响：依赖月度流量重置的面板统计会看到累计值；需要该行为时应在 A03/A05 后续任务补齐。
+
+## D-023 `strict_proc` 下 uptime 读取失败不写入 message
+
+- **Go**：没有 `strict_proc` 概念；`monitoring.Uptime()` 失败时把错误追加到上报 `message`。
+- **Rust**：设置 `HOST_PROC` 后会启用 `MonitorOptions::strict_proc`。此时 uptime 读取失败
+  直接上报 `0`，不向 `message` 追加错误，也不回退到宿主机 `/proc`/sysinfo。
+
+原因：注入的 proc root 被视为权威来源，避免容器内静默混入宿主机指标。
+影响：`HOST_PROC` 部署在 proc 挂载异常时看不到 `failed to get uptime` 诊断；未设置
+`HOST_PROC` 的正常路径仍按 Go 追加错误。

@@ -63,23 +63,38 @@ impl ReportProvider for MonitorReportProvider {
         let memory = self.collector.collect_memory();
         let swap = self.collector.collect_swap();
         let load = self.collector.collect_load();
-        let mut message = extra.message;
 
-        // Go appends an uptime error to the report message. `collect_uptime`
-        // hides the error behind its fallback, so probe once more to reproduce
-        // the diagnostic (strict mode intentionally stays silent).
+        // Go appends diagnostics in this order: network, connections, uptime,
+        // GPU. Disk errors are silent.
+        let mut message = String::new();
+        if let Some(error) = extra.network_error.as_deref() {
+            message.push_str(&format!("failed to get network speed: {error}\n"));
+        }
+        if let Some(error) = extra.connections_error.as_deref() {
+            message.push_str(&format!("failed to get connections: {error}\n"));
+        }
+
+        // The success path reads /proc/uptime once. Only a failed read needs
+        // the collector fallback (which re-reads); strict mode reports zero
+        // without a message.
         #[cfg(target_os = "linux")]
         let uptime = match agent_monitor::read_uptime(&self.collector.options().proc_root) {
             Ok(uptime) => uptime,
             Err(error) => {
-                if !self.collector.options().strict_proc {
+                if self.collector.options().strict_proc {
+                    0
+                } else {
                     message.push_str(&format!("failed to get uptime: {error}\n"));
+                    self.collector.collect_uptime()
                 }
-                self.collector.collect_uptime()
             }
         };
         #[cfg(not(target_os = "linux"))]
         let uptime = self.collector.collect_uptime();
+
+        if let Some(error) = extra.gpu_error.as_deref() {
+            message.push_str(&format!("failed to get detailed GPU info: {error}\n"));
+        }
 
         ReportSample {
             cpu_usage: cpu.usage,
