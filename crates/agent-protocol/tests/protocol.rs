@@ -287,6 +287,23 @@ fn v2_report_request_matches_go_golden() {
 }
 
 #[test]
+fn v2_report_keeps_large_integers_exact() {
+    // Deviation D-004: Go re-encodes the report through `interface{}` and
+    // rounds integers above 2^53. Rust keeps the exact value.
+    let report = decode_v1::<ReportV1>(REPORT_GOLDEN).unwrap();
+    let payload = report_notification(&report).unwrap();
+    assert!(payload.contains("\"totalDown\":9223372036854775807"));
+    assert!(payload.contains("\"totalUp\":9007199254740993"));
+
+    let decoded = RpcRequest::from_json(&payload).unwrap();
+    assert_eq!(decoded.method, METHOD_AGENT_REPORT);
+    let request =
+        decode_v1::<ReportV1>(&serde_json::to_string(&decoded.params.unwrap()["report"]).unwrap())
+            .unwrap();
+    assert_eq!(request, report);
+}
+
+#[test]
 fn v2_basic_info_notification_matches_go_golden() {
     let info = decode_v1::<BasicInfoV1>(BASIC_INFO_GOLDEN).unwrap();
     let payload = v2::basic_info_notification(&info).unwrap();

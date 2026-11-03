@@ -11,8 +11,6 @@
 //! `utils/rpc` types (`JsonRpcRequest`, `JsonRpcResponse`, `JsonRpcError`).
 //! Requests without an `id` are notifications; the panel must not answer them.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -273,9 +271,6 @@ pub fn basic_info_request(
     let params = serde_json::to_value(basic_info_params(info)?)?;
     RpcRequest::request(id, METHOD_AGENT_BASIC_INFO, Some(params)).to_json()
 }
-
-/// Convenience re-export of the raw JSON object map type used for params.
-pub type ParamsMap = BTreeMap<String, Value>;
 
 #[cfg(test)]
 mod tests {
