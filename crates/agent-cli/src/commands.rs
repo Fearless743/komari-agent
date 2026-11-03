@@ -21,7 +21,8 @@ pub fn check_mem(
 ) -> io::Result<()> {
     writeln!(out, "--- Memory Check ---")?;
 
-    if let Ok(info) = read_meminfo(proc_root) {
+    let info = read_meminfo(proc_root).ok();
+    if let Some(info) = &info {
         writeln!(out, "--- /proc/meminfo ---")?;
         write_mib(out, "MemTotal", info.mem_total)?;
         write_mib(out, "MemFree", info.mem_free)?;
@@ -36,23 +37,34 @@ pub fn check_mem(
         write_mib(out, "Zswap", info.zswap)?;
         write_mib(out, "Zswapped", info.zswapped)?;
         writeln!(out, "---------------------")?;
-
-        writeln!(out, "--- Memory Modes ---")?;
-        write_mode(out, MemoryMode::HtopLike, info.mem_total, info.htop_used())?;
-        write_mode(
-            out,
-            MemoryMode::Gopsutil,
-            info.mem_total,
-            info.mem_total.saturating_sub(info.available()),
-        )?;
-        let (call_free_total, call_free_used) = call_free();
-        write_mode_str(out, "callFree", call_free_total, call_free_used)?;
     } else {
         writeln!(out, "failed to read {}/meminfo", proc_root.display())?;
     }
 
+    // Go prints these three modes unconditionally, even when the raw meminfo
+    // read fails (the htop-like values then stay zero).
+    let (htop_total, htop_used) = info
+        .as_ref()
+        .map(|info| (info.mem_total, info.htop_used()))
+        .unwrap_or((0, 0));
+    write_mode(out, MemoryMode::HtopLike, htop_total, htop_used)?;
+
+    let (gopsutil_total, gopsutil_used) = info
+        .as_ref()
+        .map(|info| {
+            (
+                info.mem_total,
+                info.mem_total.saturating_sub(info.available()),
+            )
+        })
+        .unwrap_or((0, 0));
+    write_mode(out, MemoryMode::Gopsutil, gopsutil_total, gopsutil_used)?;
+
+    let (call_free_total, call_free_used) = call_free();
+    write_mode_str(out, "callFree", call_free_total, call_free_used)?;
+
     writeln!(out, "--- Current Configured ---")?;
-    if let Ok(info) = read_meminfo(proc_root) {
+    if let Some(info) = &info {
         let (mode, used) = if include_cache {
             (
                 MemoryMode::IncludeCache,
@@ -175,6 +187,20 @@ mod tests {
         assert!(text.contains("MemTotal: 2 MiB"));
         assert!(text.contains("MemAvailable: 1 MiB"));
         assert!(text.contains("[htoplike]"));
+        assert!(text.contains("[callFree]"));
+        assert!(text.contains("--- Current Configured ---"));
+    }
+
+    #[test]
+    fn check_mem_prints_modes_even_without_meminfo() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut output = Vec::new();
+        check_mem(directory.path(), false, false, &mut output).unwrap();
+        let text = String::from_utf8(output).unwrap();
+
+        assert!(!text.contains("--- Memory Modes ---"));
+        assert!(text.contains("[htoplike] Total: 0 bytes"));
+        assert!(text.contains("[gopsutil] Total: 0 bytes"));
         assert!(text.contains("[callFree]"));
         assert!(text.contains("--- Current Configured ---"));
     }
