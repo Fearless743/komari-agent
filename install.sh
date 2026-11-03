@@ -330,8 +330,14 @@ parse_args() {
         log_info "No write permission to /usr/local, using user directory: $TARGET_DIR"
     fi
 
+    if [[ "$TARGET_DIR" != /* ]]; then
+        die "Install directory must be an absolute path: $TARGET_DIR"
+    fi
+
     if [ -z "$CONFIG_FILE" ]; then
         CONFIG_FILE="$TARGET_DIR/config.json"
+    elif [[ "$CONFIG_FILE" != /* ]]; then
+        CONFIG_FILE="$TARGET_DIR/$CONFIG_FILE"
     fi
 
     if ! [[ "$SERVICE_NAME" =~ ^[A-Za-z0-9_.@-]+$ ]]; then
@@ -369,9 +375,7 @@ install_dependencies() {
 
     log_step "Checking dependencies..."
     local missing=()
-    for cmd in curl; do
-        command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
-    done
+    command -v curl >/dev/null 2>&1 || missing+=("curl")
 
     if [ "${#missing[@]}" -eq 0 ]; then
         log_success "Dependencies already satisfied"
