@@ -218,7 +218,39 @@ function Set-PathAcl {
 
     & icacls @icaclsArgs 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        Fail "icacls failed for $Path (exit code $LASTEXITCODE)"
+        throw "icacls failed for $Path (exit code $LASTEXITCODE)"
+    }
+}
+
+function Assert-SafeInstallDir {
+    param([string]$Path)
+
+    $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $root = [System.IO.Path]::GetPathRoot($full).TrimEnd('\')
+    if ($full -eq $root) {
+        Fail "Refusing to use a drive root as the install directory: $Path"
+    }
+
+    $protected = @(
+        $env:SystemRoot,
+        $env:ProgramFiles,
+        ${env:ProgramFiles(x86)},
+        $env:ProgramData,
+        $env:USERPROFILE
+    )
+    foreach ($item in $protected) {
+        if (-not $item) { continue }
+        $candidate = [System.IO.Path]::GetFullPath($item).TrimEnd('\')
+        if ($full -eq $candidate) {
+            Fail "Refusing to use a system directory as the install directory: $Path"
+        }
+    }
+
+    if ($env:SystemRoot) {
+        $windows = [System.IO.Path]::GetFullPath($env:SystemRoot).TrimEnd('\')
+        if ($full.ToLowerInvariant().StartsWith($windows.ToLowerInvariant() + '\')) {
+            Fail "Refusing to install under the Windows directory: $Path"
+        }
     }
 }
 
@@ -271,8 +303,13 @@ function Write-AgentConfig {
     }
 
     $utf8 = New-Object System.Text.UTF8Encoding -ArgumentList $false
-    $tempConfig = "$ConfigPath.tmp.$PID"
+    $tempConfig = "$ConfigPath.tmp.$PID.$([guid]::NewGuid().ToString('N'))"
     try {
+        # Create the temp file first, restrict it, and only then write the
+        # token-bearing JSON so the secret never exists with inherited ACLs.
+        $stream = [System.IO.File]::Create($tempConfig)
+        $stream.Dispose()
+        Set-PathAcl -Path $tempConfig
         [System.IO.File]::WriteAllText($tempConfig, $json, $utf8)
         Set-PathAcl -Path $tempConfig
         Move-Item -LiteralPath $tempConfig -Destination $ConfigPath -Force
@@ -573,6 +610,8 @@ Write-Config "Agent version: $(if ($InstallVersion) { $InstallVersion } else { '
 Write-Config "Dry run: $DryRun"
 Write-Host ''
 
+Assert-SafeInstallDir $InstallDir
+
 if ($Uninstall) {
     $NssmPath = Get-NssmIfAvailable
     if ($DryRun) {
@@ -589,8 +628,29 @@ if ($Uninstall) {
 }
 
 if (-not $DryRun) {
+    $installDirExisted = Test-Path -LiteralPath $InstallDir
     [System.IO.Directory]::CreateDirectory($InstallDir) | Out-Null
-    Set-PathAcl -Path $InstallDir -Directory
+    if ($installDirExisted) {
+        Write-WarningLog "Install directory $InstallDir already exists; its directory ACL is left unchanged"
+    }
+    else {
+        try {
+            Set-PathAcl -Path $InstallDir -Directory
+        }
+        catch {
+            Fail "Failed to restrict the install directory ACL: $_"
+        }
+    }
+
+    $discovery = Join-Path $InstallDir 'auto-discovery.json'
+    if (Test-Path -LiteralPath $discovery) {
+        try {
+            Set-PathAcl -Path $discovery
+        }
+        catch {
+            Fail "Failed to restrict the auto-discovery file ACL: $_"
+        }
+    }
 }
 
 if ($DryRun) {
@@ -643,6 +703,15 @@ if ($ConfigExplicit) {
 }
 else {
     Write-AgentConfig -EndpointValue $Endpoint -TokenValue $Token -IntervalValue $Interval
+}
+
+if (Test-Path -LiteralPath $ConfigPath) {
+    try {
+        Set-PathAcl -Path $ConfigPath
+    }
+    catch {
+        Fail "Failed to restrict the config file ACL: $_"
+    }
 }
 
 Install-AgentService -Nssm $NssmPath
