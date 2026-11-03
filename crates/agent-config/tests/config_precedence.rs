@@ -181,6 +181,20 @@ fn omitted_flags_stay_none() {
 }
 
 #[test]
+fn integer_values_beyond_32_bits_are_supported() {
+    // Go's `int` is 64-bit on supported platforms; the Rust fields use i64.
+    let env = env_from(&[
+        ("AGENT_MAX_RETRIES", "4294967296"),
+        ("AGENT_PROTOCOL_VERSION", "2147483648"),
+    ]);
+
+    let config = Config::load_with_env(CliOverrides::default(), &env).expect("config should load");
+
+    assert_eq!(config.max_retries, 4_294_967_296);
+    assert_eq!(config.protocol_version, 2_147_483_648);
+}
+
+#[test]
 fn secret_values_never_reach_debug_output() {
     let cli = CliOverrides {
         token: Some("token-value".to_owned()),

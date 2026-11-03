@@ -70,7 +70,7 @@ pub struct CliOverrides {
         value_name = "COUNT",
         help = "Maximum number of retries"
     )]
-    pub max_retries: Option<i32>,
+    pub max_retries: Option<i64>,
 
     #[arg(
         long = "reconnect-interval",
@@ -79,7 +79,7 @@ pub struct CliOverrides {
         value_name = "SECONDS",
         help = "Reconnect interval in seconds"
     )]
-    pub reconnect_interval: Option<i32>,
+    pub reconnect_interval: Option<i64>,
 
     #[arg(
         long = "info-report-interval",
@@ -87,7 +87,7 @@ pub struct CliOverrides {
         value_name = "MINUTES",
         help = "Interval in minutes for reporting basic info"
     )]
-    pub info_report_interval: Option<i32>,
+    pub info_report_interval: Option<i64>,
 
     #[arg(
         long = "include-nics",
@@ -116,7 +116,7 @@ pub struct CliOverrides {
         value_name = "DAY",
         help = "Month reset for network statistics (0 to disable)"
     )]
-    pub month_rotate: Option<i32>,
+    pub month_rotate: Option<i64>,
 
     #[arg(
         long = "cf-access-client-id",
@@ -206,7 +206,7 @@ pub struct CliOverrides {
         value_name = "VERSION",
         help = "Report protocol version (1 or 2)"
     )]
-    pub protocol_version: Option<i32>,
+    pub protocol_version: Option<i64>,
 
     #[arg(
         long = "disable-compression",

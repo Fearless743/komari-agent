@@ -41,13 +41,13 @@ pub struct Config {
     pub endpoint: String,
     pub interval: f64,
     pub ignore_unsafe_cert: bool,
-    pub max_retries: i32,
-    pub reconnect_interval: i32,
-    pub info_report_interval: i32,
+    pub max_retries: i64,
+    pub reconnect_interval: i64,
+    pub info_report_interval: i64,
     pub include_nics: String,
     pub exclude_nics: String,
     pub include_mountpoints: String,
-    pub month_rotate: i32,
+    pub month_rotate: i64,
     pub cf_access_client_id: String,
     pub cf_access_client_secret: String,
     pub memory_include_cache: bool,
@@ -59,7 +59,7 @@ pub struct Config {
     pub get_ip_addr_from_nic: bool,
     pub host_proc: String,
     pub config_file: String,
-    pub protocol_version: i32,
+    pub protocol_version: i64,
     pub disable_compression: bool,
     pub prefer_ip_version: String,
 }
@@ -173,13 +173,13 @@ impl Config {
         string!(endpoint, "AGENT_ENDPOINT");
         number!(interval, "AGENT_INTERVAL", f64);
         boolean!(ignore_unsafe_cert, "AGENT_IGNORE_UNSAFE_CERT");
-        number!(max_retries, "AGENT_MAX_RETRIES", i32);
-        number!(reconnect_interval, "AGENT_RECONNECT_INTERVAL", i32);
-        number!(info_report_interval, "AGENT_INFO_REPORT_INTERVAL", i32);
+        number!(max_retries, "AGENT_MAX_RETRIES", i64);
+        number!(reconnect_interval, "AGENT_RECONNECT_INTERVAL", i64);
+        number!(info_report_interval, "AGENT_INFO_REPORT_INTERVAL", i64);
         string!(include_nics, "AGENT_INCLUDE_NICS");
         string!(exclude_nics, "AGENT_EXCLUDE_NICS");
         string!(include_mountpoints, "AGENT_INCLUDE_MOUNTPOINTS");
-        number!(month_rotate, "AGENT_MONTH_ROTATE", i32);
+        number!(month_rotate, "AGENT_MONTH_ROTATE", i64);
         string!(cf_access_client_id, "AGENT_CF_ACCESS_CLIENT_ID");
         string!(cf_access_client_secret, "AGENT_CF_ACCESS_CLIENT_SECRET");
         boolean!(memory_include_cache, "AGENT_MEMORY_INCLUDE_CACHE");
@@ -191,7 +191,7 @@ impl Config {
         boolean!(get_ip_addr_from_nic, "AGENT_GET_IP_ADDR_FROM_NIC");
         string!(host_proc, "HOST_PROC");
         string!(config_file, CONFIG_FILE_ENV);
-        number!(protocol_version, "AGENT_PROTOCOL_VERSION", i32);
+        number!(protocol_version, "AGENT_PROTOCOL_VERSION", i64);
         boolean!(disable_compression, "AGENT_DISABLE_COMPRESSION");
         string!(prefer_ip_version, "AGENT_PREFER_IP_VERSION");
     }
