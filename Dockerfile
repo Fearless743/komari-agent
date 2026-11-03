@@ -32,7 +32,7 @@ FROM debian:bookworm-slim
 
 LABEL org.opencontainers.image.title="komari-agent" \
       org.opencontainers.image.description="Komari monitoring agent" \
-      org.opencontainers.image.source="https://github.com/Fearless743/komari-agent" \
+      org.opencontainers.image.source="https://github.com/fearless743/komari-agent" \
       org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update \
@@ -40,9 +40,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 komari \
     && useradd --system --uid 10001 --gid komari \
-        --home-dir /var/lib/komari --shell /usr/sbin/nologin komari \
-    && mkdir -p /app /etc/komari /var/lib/komari \
-    && chown -R komari:komari /app /etc/komari /var/lib/komari
+        --home-dir /app --shell /usr/sbin/nologin komari \
+    && mkdir -p /app /etc/komari \
+    && chown -R komari:komari /app /etc/komari
 
 COPY --from=builder /out/komari-agent /app/komari-agent
 
@@ -51,8 +51,9 @@ COPY --from=builder /out/komari-agent /app/komari-agent
 WORKDIR /app
 USER 10001:10001
 
-# Configuration and persistent state. See readme.md for a compose example.
-VOLUME ["/etc/komari", "/var/lib/komari"]
+# Configuration volume. The only state the agent writes is auto-discovery.json,
+# which is created next to the executable in /app; see readme.md for details.
+VOLUME ["/etc/komari"]
 
 ENTRYPOINT ["/app/komari-agent"]
 CMD ["--help"]
