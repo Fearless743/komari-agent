@@ -14,7 +14,7 @@ use agent_discovery::{
     AutoDiscovery, AutoDiscoveryOptions, DiscoveryError, PreferIp, default_config_path,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 #[derive(Clone, Debug)]
 struct CapturedRequest {
@@ -160,6 +160,63 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+fn dns_question_type(query: &[u8]) -> Option<u16> {
+    let mut position = 12;
+    loop {
+        let length = *query.get(position)? as usize;
+        if length == 0 {
+            position += 1;
+            break;
+        }
+        position += 1 + length;
+    }
+    Some(u16::from_be_bytes([
+        *query.get(position)?,
+        *query.get(position + 1)?,
+    ]))
+}
+
+fn dns_response(query: &[u8]) -> Vec<u8> {
+    let record_type = dns_question_type(query).unwrap_or(1);
+    let address = [127, 0, 0, 1];
+
+    let mut packet = Vec::new();
+    packet.extend_from_slice(&query[..2]);
+    packet.extend_from_slice(&0x8180u16.to_be_bytes());
+    packet.extend_from_slice(&1u16.to_be_bytes());
+    let answers: u16 = if record_type == 1 { 1 } else { 0 };
+    packet.extend_from_slice(&answers.to_be_bytes());
+    packet.extend_from_slice(&0u16.to_be_bytes());
+    packet.extend_from_slice(&0u16.to_be_bytes());
+    packet.extend_from_slice(&query[12..]);
+
+    if record_type == 1 {
+        packet.extend_from_slice(&[0xC0, 0x0C]);
+        packet.extend_from_slice(&1u16.to_be_bytes());
+        packet.extend_from_slice(&1u16.to_be_bytes());
+        packet.extend_from_slice(&60u32.to_be_bytes());
+        packet.extend_from_slice(&4u16.to_be_bytes());
+        packet.extend_from_slice(&address);
+    }
+
+    packet
+}
+
+async fn start_dns() -> SocketAddr {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let address = socket.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let mut buffer = vec![0u8; 1024];
+        while let Ok((length, peer)) = socket.recv_from(&mut buffer).await {
+            let response = dns_response(&buffer[..length]);
+            let _ = socket.send_to(&response, peer).await;
+        }
+    });
+
+    address
 }
 
 fn options(endpoint: SocketAddr, config_path: std::path::PathBuf) -> AutoDiscoveryOptions {
@@ -351,4 +408,30 @@ async fn corrupt_config_is_replaced_by_registration() {
     assert!(result.registered);
     assert_eq!(result.config.uuid, "new-uuid");
     assert!(default_config_path().ends_with("auto-discovery.json"));
+}
+
+#[tokio::test]
+async fn registers_idn_endpoint_with_trailing_slashes() {
+    let directory = tempfile::tempdir().unwrap();
+    let config_path = directory.path().join("auto-discovery.json");
+    let (http_address, requests) = start_http(MockReply::json(
+        200,
+        r#"{"status":"success","data":{"uuid":"idn-uuid","token":"idn-token"}}"#,
+    ))
+    .await;
+    let dns_address = start_dns().await;
+
+    let mut settings = options(http_address, config_path.clone());
+    settings.endpoint = format!("http://中文.test:{}/", http_address.port());
+    settings.custom_dns = Some(dns_address.to_string());
+
+    let discovery = AutoDiscovery::new(settings).unwrap();
+    let result = discovery.handle().await.unwrap();
+
+    assert!(result.registered);
+    assert_eq!(result.config.uuid, "idn-uuid");
+
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].path, "/api/clients/register?name=test-host");
 }

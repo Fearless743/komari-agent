@@ -396,18 +396,7 @@ impl AutoDiscovery {
             })
             .unwrap_or_default();
 
-        let endpoint = convert_url_to_ascii(&self.options.endpoint).unwrap_or_else(|err| {
-            tracing::warn!(%err, "failed to convert endpoint IDN to ASCII; using original value");
-            self.options.endpoint.clone()
-        });
-
-        let mut url = Url::parse(&endpoint)
-            .map_err(|err| DiscoveryError::InvalidEndpoint(err.to_string()))?;
-        let path = format!("{}/api/clients/register", url.path().trim_end_matches('/'));
-        url.set_path(&path);
-        url.set_query(None);
-        url.set_fragment(None);
-        url.query_pairs_mut().append_pair("name", &hostname);
+        let url = build_register_url(&self.options.endpoint, &hostname)?;
 
         let body = serde_json::to_vec(&RegisterRequest {
             key: self.options.auto_discovery_key.clone(),
@@ -469,6 +458,23 @@ impl AutoDiscovery {
 
         Ok(config)
     }
+}
+
+fn build_register_url(endpoint: &str, hostname: &str) -> Result<Url, DiscoveryError> {
+    let endpoint = convert_url_to_ascii(endpoint).unwrap_or_else(|err| {
+        tracing::warn!(%err, "failed to convert endpoint IDN to ASCII; using original value");
+        endpoint.to_owned()
+    });
+
+    let mut url =
+        Url::parse(&endpoint).map_err(|err| DiscoveryError::InvalidEndpoint(err.to_string()))?;
+    let path = format!("{}/api/clients/register", url.path().trim_end_matches('/'));
+    url.set_path(&path);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.query_pairs_mut().append_pair("name", hostname);
+
+    Ok(url)
 }
 
 /// `auto-discovery.json` next to the executable, or the current directory if
@@ -589,5 +595,21 @@ mod tests {
         assert!(rendered.contains("uuid-1"));
         assert!(!rendered.contains("super-secret"));
         assert!(rendered.contains("******"));
+    }
+    #[test]
+    fn register_url_converts_idn_and_collapses_trailing_slashes() {
+        let url = build_register_url("https://中文.com///", "host").unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://xn--fiq228c.com/api/clients/register?name=host"
+        );
+
+        let url = build_register_url("http://127.0.0.1:8080//", "test host").unwrap();
+        assert_eq!(
+            url.path(),
+            "/api/clients/register",
+            "duplicate slashes must not survive"
+        );
+        assert_eq!(url.query(), Some("name=test+host"));
     }
 }
