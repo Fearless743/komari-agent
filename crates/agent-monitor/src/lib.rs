@@ -15,12 +15,19 @@
 //! and passes the value to [`MonitorOptions::from_config`]. The collector itself
 //! never reads the process environment.
 
+mod cpu;
 mod error;
 mod options;
+mod os;
+mod platform;
+mod procfs;
 mod types;
 
 pub use error::MonitorError;
 pub use options::{DEFAULT_PROC_ROOT, HOST_PROC_ENV, MonitorOptions};
+pub use procfs::{
+    CpuTimes, CpuUsage, ProcStat, parse_proc_stat, read_proc_stat, usage_between,
+};
 pub use types::{
     BasicInfo, CpuInfo, LoadAverage, MemoryInfo, MemoryMode, OsInfo, SwapInfo, SystemSnapshot,
 };
