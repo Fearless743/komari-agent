@@ -241,6 +241,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cloudflare_access_headers_are_sent_on_both_attempts() {
+        let http = Arc::new(FakeHttp {
+            responses: Mutex::new(vec![200, 500]),
+            requests: Mutex::new(Vec::new()),
+        });
+        let uploader = BasicInfoUploader::new(http.clone(), "https://panel.example", "tok")
+            .with_access_headers("client-id", "client-secret");
+        uploader.upload(&sample_info()).await.unwrap();
+
+        let requests = http.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        for request in requests.iter() {
+            assert!(
+                request
+                    .headers
+                    .iter()
+                    .any(|(name, value)| { name == "CF-Access-Client-Id" && value == "client-id" })
+            );
+            assert!(request.headers.iter().any(|(name, value)| {
+                name == "CF-Access-Client-Secret" && value == "client-secret"
+            }));
+        }
+    }
+
+    #[tokio::test]
     async fn retries_without_the_legacy_fields() {
         let http = Arc::new(FakeHttp {
             responses: Mutex::new(vec![200, 500]),

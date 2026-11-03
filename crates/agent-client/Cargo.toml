@@ -27,3 +27,4 @@ url = "2"
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio-rustls = "0.26"

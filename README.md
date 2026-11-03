@@ -60,10 +60,10 @@ cargo build --release
 
 - 所有 `/proc` 读取支持 `HOST_PROC` 注入；`HOST_SYS` 可注入 sysfs topology/DMI；
   未设置 `HOST_PROC` 时的本机回退与 `strict_proc` 行为见 crate README。
-- 周期上报使用 `Collector::collect_report_metrics()`（不探测 OS/虚拟化），
+- 周期上报使用 `Collector::sample_cpu(1s)` 固定采样窗口，再读取内存/Swap/负载/uptime；
   基础信息使用 `collect_basic_info()`；`collect()` 仅用于诊断。
 - 磁盘、网络、连接数、进程数与 GPU 由 `agent-client` 的 `supplement` 模块临时补齐，
-  行为对齐 Go `GenerateReport`；A03 将把这些采集迁入 `agent-monitor`，届时可直接替换。
+  行为对齐 Go `GenerateReport`；A03 将把这些采集迁入 `agent-monitor`，收敛计划见 D-019。
 
 详见 [`crates/agent-monitor/README.md`](crates/agent-monitor/README.md)。
 
@@ -172,8 +172,8 @@ AGENT_TOKEN=your-token AGENT_ENDPOINT=https://panel.example.com ./komari-agent
 - 断开后按 `max_retries`、`reconnect_interval` 重连，耗尽后返回并由 CLI 退出；
 - 首次连接成功后立即上传 `BasicInfoV1`，之后每 `info_report_interval` 分钟上传；
   失败时按 Go 语义去掉 `kernel_version` / `cpu_physical_cores` 再试一次；
-- `auto_discovery_key` 存在时读取/写入 `auto-discovery.json`；自动更新通过
-  `agent-update::run_periodic` 运行，`Updated` 映射为退出码 42。
+- `auto_discovery_key` 存在时读取/写入 `auto-discovery.json`；启动时先同步检查一次更新
+  （`Updated` 映射为退出码 42），随后由 `agent-update::run_periodic` 每 6 小时检查。
 
 WebSocket、时钟、HTTP 上传与指标源均为 trait，测试使用本地 mock server 或通道实现，
 不会访问真实面板。架构与测试说明见

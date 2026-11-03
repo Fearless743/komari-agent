@@ -4,7 +4,7 @@
 //! panel. The only real timing is the one second effective report interval,
 //! which is part of the Go-compatible contract.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -34,6 +34,7 @@ struct MockState {
     attempts: AtomicUsize,
     connections: AtomicUsize,
     fail_attempts: usize,
+    fail_sends: AtomicBool,
     outgoing: mpsc::UnboundedSender<(usize, Outgoing)>,
     server: Mutex<Option<mpsc::UnboundedSender<ServerCommand>>>,
 }
@@ -55,6 +56,7 @@ impl MockTransport {
             attempts: AtomicUsize::new(0),
             connections: AtomicUsize::new(0),
             fail_attempts,
+            fail_sends: AtomicBool::new(false),
             outgoing: outgoing_tx,
             server: Mutex::new(None),
         });
@@ -84,6 +86,7 @@ impl WsTransport for MockTransport {
             sender: Box::new(MockSender {
                 id,
                 outgoing: self.state.outgoing.clone(),
+                fail_sends: self.state.clone(),
             }),
             receiver: Box::new(MockReceiver { server_rx }),
         })
@@ -93,11 +96,15 @@ impl WsTransport for MockTransport {
 struct MockSender {
     id: usize,
     outgoing: mpsc::UnboundedSender<(usize, Outgoing)>,
+    fail_sends: Arc<MockState>,
 }
 
 #[async_trait]
 impl WsSender for MockSender {
     async fn send_text(&mut self, payload: &str) -> Result<(), WsError> {
+        if self.fail_sends.fail_sends.load(Ordering::SeqCst) {
+            return Err(WsError::Send("mock send failure".to_owned()));
+        }
         let _ = self
             .outgoing
             .send((self.id, Outgoing::Text(payload.to_owned())));
@@ -105,6 +112,9 @@ impl WsSender for MockSender {
     }
 
     async fn send_ping(&mut self) -> Result<(), WsError> {
+        if self.fail_sends.fail_sends.load(Ordering::SeqCst) {
+            return Err(WsError::Send("mock ping failure".to_owned()));
+        }
         let _ = self.outgoing.send((self.id, Outgoing::Ping));
         Ok(())
     }
@@ -155,12 +165,22 @@ impl ReportProvider for FixedProvider {
 #[derive(Default)]
 struct FakeHttp {
     requests: Mutex<Vec<HttpRequest>>,
+    /// Delay applied to every request after the first (used to prove periodic
+    /// uploads do not block reports or heartbeats).
+    slow_after_first: Option<Duration>,
 }
 
 #[async_trait]
 impl HttpClient for FakeHttp {
     async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, DiscoveryError> {
-        self.requests.lock().unwrap().push(request);
+        let slow = {
+            let mut requests = self.requests.lock().unwrap();
+            requests.push(request);
+            requests.len() > 1
+        };
+        if slow && let Some(delay) = self.slow_after_first {
+            tokio::time::sleep(delay).await;
+        }
         Ok(HttpResponse {
             status: 200,
             body: Vec::new(),
@@ -222,17 +242,11 @@ async fn connects_and_sends_the_first_report() {
     assert_eq!(value["process"], 7);
     assert_eq!(value["message"], "mock");
 
-    // The first successful connection uploads basic info immediately.
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            if !http.requests.lock().unwrap().is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("basic info was not uploaded");
+    // Basic info is uploaded before the first frame, like Go's root command.
+    assert!(
+        !http.requests.lock().unwrap().is_empty(),
+        "basic info must be uploaded before the first report"
+    );
 
     handle.abort();
 }
@@ -397,4 +411,145 @@ fn read_events_only_classify_frames() {
         WsEvent::Closed,
     ];
     assert_eq!(events.len(), 3);
+}
+
+#[tokio::test]
+async fn initial_basic_info_upload_runs_even_when_all_connections_fail() {
+    let (transport, state, mut outgoing) = MockTransport::new(usize::MAX);
+    let http = Arc::new(FakeHttp::default());
+    let mut options = options(1.0);
+    options.max_retries = 1;
+    let client = client(options, transport, http.clone());
+
+    let outcome = tokio::time::timeout(Duration::from_secs(3), client.run())
+        .await
+        .expect("client did not give up");
+
+    assert_eq!(outcome, RunOutcome::RetriesExhausted);
+    assert_eq!(state.attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(http.requests.lock().unwrap().len(), 1);
+    assert!(outgoing.try_recv().is_err(), "no frame may be sent");
+}
+
+#[tokio::test]
+async fn send_failure_reconnects_on_the_next_tick() {
+    let (transport, state, mut outgoing) = MockTransport::new(0);
+    let client = client(options(1.0), transport, Arc::new(FakeHttp::default()));
+    let handle = tokio::spawn(async move { client.run().await });
+
+    let (first, _) = next_outgoing(&mut outgoing).await;
+    assert_eq!(first, 1);
+    state.fail_sends.store(true, Ordering::SeqCst);
+
+    let mut reconnected = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        let (connection, message) = next_outgoing(&mut outgoing).await;
+        if matches!(message, Outgoing::Close) {
+            state.fail_sends.store(false, Ordering::SeqCst);
+        }
+        if connection > 1 && matches!(message, Outgoing::Text(_)) {
+            reconnected = true;
+            break;
+        }
+    }
+
+    assert!(reconnected, "client did not reconnect after a send failure");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn heartbeat_failure_reconnects() {
+    let (transport, state, mut outgoing) = MockTransport::new(0);
+    let mut options = options(1.0);
+    options.heartbeat_interval = Duration::from_millis(100);
+    let client = client(options, transport, Arc::new(FakeHttp::default()));
+    let handle = tokio::spawn(async move { client.run().await });
+
+    let (first, _) = next_outgoing(&mut outgoing).await;
+    assert_eq!(first, 1);
+    state.fail_sends.store(true, Ordering::SeqCst);
+
+    let mut reconnected = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        let (connection, message) = next_outgoing(&mut outgoing).await;
+        if matches!(message, Outgoing::Close) {
+            state.fail_sends.store(false, Ordering::SeqCst);
+        }
+        if connection > 1 && matches!(message, Outgoing::Text(_)) {
+            reconnected = true;
+            break;
+        }
+    }
+
+    assert!(
+        reconnected,
+        "client did not reconnect after a heartbeat failure"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn slow_periodic_uploads_do_not_block_heartbeats() {
+    let (transport, _state, mut outgoing) = MockTransport::new(0);
+    let http = Arc::new(FakeHttp {
+        slow_after_first: Some(Duration::from_secs(2)),
+        ..FakeHttp::default()
+    });
+    let mut options = options(1.0);
+    options.heartbeat_interval = Duration::from_millis(50);
+    options.info_report_interval = Duration::from_millis(50);
+    let client = client(options, transport, http);
+    let started = tokio::time::Instant::now();
+    let handle = tokio::spawn(async move { client.run().await });
+
+    // The first periodic upload starts at 50ms and takes 2s. The first report
+    // must still arrive on the normal ~1s tick rather than after the upload.
+    let first_text = loop {
+        let (_, message) = next_outgoing(&mut outgoing).await;
+        if matches!(message, Outgoing::Text(_)) {
+            break message;
+        }
+    };
+    assert!(matches!(first_text, Outgoing::Text(_)));
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "report was blocked by the periodic upload: {:?}",
+        started.elapsed()
+    );
+
+    // Heartbeats must also keep flowing while the upload is in flight.
+    let mut pings = 0;
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Some((_, message))) =
+            tokio::time::timeout(Duration::from_millis(200), outgoing.recv()).await
+            && message == Outgoing::Ping
+        {
+            pings += 1;
+        }
+    }
+
+    assert!(pings >= 3, "heartbeats were blocked by uploads: {pings}");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn final_failed_attempt_sleeps_reconnect_interval() {
+    let (transport, _state, _outgoing) = MockTransport::new(usize::MAX);
+    let mut options = options(1.0);
+    options.max_retries = 0;
+    options.reconnect_interval = Duration::from_millis(150);
+    let client = client(options, transport, Arc::new(FakeHttp::default()));
+
+    let started = tokio::time::Instant::now();
+    let outcome = client.run().await;
+    let elapsed = started.elapsed();
+
+    assert_eq!(outcome, RunOutcome::RetriesExhausted);
+    assert!(
+        elapsed >= Duration::from_millis(150),
+        "final failure did not sleep before returning: {elapsed:?}"
+    );
 }

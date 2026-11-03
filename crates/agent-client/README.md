@@ -22,7 +22,7 @@ Komari Agent 的协议 v1 运行链路。对应 Go 的 `server/websocket.go`、
 2. 未连接时先连接，成功后立即发送第一帧；首个成功连接后立即上传基础信息；
 3. 每 30 秒发送 Ping；读任务只消费服务端帧，收到 Close/读错误时通知主循环；
 4. 发送或心跳失败会关闭连接，下个数据 tick 按 `max_retries + 1` 次尝试、
-   `reconnect_interval` 间隔重连；
+   `reconnect_interval` 间隔重连（最后一次失败后同样 sleep 再返回）；
 5. 重试耗尽后 `run()` 返回 `RunOutcome::RetriesExhausted`。
 
 v2、gzip 与 POST fallback 不存在（D-004）。
@@ -40,9 +40,12 @@ v2、gzip 与 POST fallback 不存在（D-004）。
 
 ## 已知限制
 
-- `supplement` 是为 A03 落地前的临时实现：GPU 详细探测仅支持 NVIDIA
-  (`nvidia-smi`)，AMD `rocm-smi`、sysfs 设备树模型与 Windows/非 Linux 采集尚未覆盖；
+- `supplement` 是为 A03 落地前的临时实现（D-019）：GPU 详细探测仅支持 NVIDIA
+  (`nvidia-smi`)，AMD `rocm-smi`、sysfs 设备树模型与 Windows/非 Linux 采集尚未覆盖。
+  A03 合并后按 D-019 的收敛计划删除本模块；
 - 未设置 `custom_ipv4/ipv6` 且未启用 `get_ip_addr_from_nic` 时，基础信息中的 IP 为空
-  （Go 会调用外部 IP 查询服务，这里刻意避免引入外网依赖）；
-- 重试耗尽后由 CLI 退出，而不是像 Go root 命令那样立即进入下一轮
-  `UpdateBasicInfo + EstablishWebSocketConnection`（见 D-013）。
+  （Go 会调用外部 IP 查询服务，这里刻意避免引入外网依赖，见 D-020）；
+- 重试耗尽后由 CLI 以退出码 1 退出，而不是像 Go root 命令那样立即进入下一轮
+  `UpdateBasicInfo + EstablishWebSocketConnection`（见 D-018）；
+- WebSocket 不走 HTTP(S)_PROXY，也不启用 permessage-deflate（见 D-021）；
+  `month_rotate`/netstatic 月度流量未实现（见 D-022）。

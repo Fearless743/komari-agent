@@ -162,23 +162,64 @@ workflow 只上传裸二进制 `komari-agent-{os}-{arch}[.exe]`，因此正常�
 
 状态：任务要求的增强，不影响正常路径。
 
-## D-013 重试耗尽后 CLI 退出，而不是立刻开始下一轮
+## D-018 重试耗尽后 CLI 以非零码退出
 
 - **Go**：`EstablishWebSocketConnection` 在 v1 下耗尽 `max_retries` 后返回，root 命令的
   `for { server.UpdateBasicInfo(); server.EstablishWebSocketConnection() }` 立即再次进入连接循环。
-- **Rust**：`AgentClient::run` 返回 `RunOutcome::RetriesExhausted`，CLI 以退出码 0 结束
-  （服务管理器可重新拉起进程）。
+- **Rust**：`AgentClient::run` 返回 `RunOutcome::RetriesExhausted`，CLI 以退出码 1 结束。
 
-原因：任务要求 v1 下“返回/退出”，同时让启动失败可观测、可测试，避免无面板时测试进程永久挂起。
-影响：服务管理器没有 Restart 策略时，进程不会像 Go 那样在内部无限重连；需要长期驻留的部署
-应配置 `Restart=always`，或把 `max_retries` 设为较大的值。
+原因：任务要求 v1 下“返回/退出”，同时让启动失败可被服务管理器感知。退出码 0 会让
+systemd `Restart=on-failure` 不重启，因此改为 1。
+影响：`Restart=always` 与 `Restart=on-failure` 均可恢复；若部署依赖进程内部无限重连，
+请把 `max_retries` 设为较大的值。服务管理器可配置 `Restart=on-failure` 或 `always`。
 
-## D-014 磁盘/网络/GPU/连接/进程采集暂由 `agent-client` 提供
+## D-019 磁盘/网络/GPU/连接/进程采集暂由 `agent-client` 提供（待 A03 收敛）
 
 - **Go**：全部由 `monitoring`（gopsutil + `lspci`/`nvidia-smi`/`rocm-smi`）采集。
 - **Rust（A05）**：`agent-monitor` 尚未包含 A03 的磁盘/网络/GPU/连接/进程采集，因此
   `agent-client::supplement` 直接读取 Linux `/proc`、`/sys`，并调用 `lspci`/`nvidia-smi`。
 
 原因：A05 需要按 Go 形状上报完整 v1 payload，不能等待 A03 合并。
-影响：非 Linux 平台这些字段为零/缺失；GPU 详细探测只覆盖 NVIDIA；后续 A03 落地后应删除
-`supplement` 并由 `agent-monitor::Collector` 提供同名数据。
+影响：非 Linux 平台这些字段为零/缺失；GPU 详细探测只覆盖 NVIDIA。
+
+收敛计划（A03 合并后执行）：
+
+1. rebase 到 A03 合并后的 main；
+2. 删除 `agent-client/src/supplement.rs`，`MonitorReportProvider` 改为直接从
+   `agent_monitor::Collector` 取磁盘/网络/GPU/连接/进程/IP；
+3. `ReportSample::from_metrics` 去掉 `..Self::default()`，改为显式构造所有 section；
+4. 把 `month_rotate` 传入新的网络统计实现；
+5. 合并 GPU 多卡/多厂商结果，保留本文件的 D-020 外部 IP 差异说明；
+6. 同步删除 `crates/agent-client/README.md` 中的过渡说明。
+
+## D-020 不访问外部 IP 查询服务，NIC 地址优先于 custom
+
+- **Go**：`GetIPAddress` 的优先级是：启用 `get_ip_addr_from_nic` 且取到地址时直接返回；
+  否则使用 `custom_ipv4`/`custom_ipv6`；两者都没有时请求 visa.cn、ipify 等外部服务。
+- **Rust**：保留 NIC 优先（`is_oper_up` + 非回环 + 非链路本地）和 custom 次之的优先级，
+  但**不请求外部 IP 服务**；未配置 NIC/custom 时基础信息中的 `ipv4`/`ipv6` 为空字符串。
+
+原因：避免 agent 在启动/基础信息上报时产生额外的外网依赖和隐私泄露；容器与内网部署
+通常更希望由 `custom_ipv4`/`custom_ipv6` 或网卡地址决定。
+影响：依赖公网出口 IP 自动识别的部署需要在配置中显式设置 `custom_ipv4`/`custom_ipv6`，
+或启用 `get_ip_addr_from_nic`。`if-addrs` 在非 Unix 平台的 `is_oper_up` 是近似值（另见 D-011）。
+
+## D-021 WebSocket 不走 HTTP(S)_PROXY，也不启用 permessage-deflate
+
+- **Go**：gorilla/websocket 使用 `http.ProxyFromEnvironment`，并默认启用
+  `EnableCompression`（除非 `disable_compression`）。
+- **Rust**：`tokio-tungstenite` 直连目标地址；v1 帧是普通 JSON，不启用 permessage-deflate。
+  `--disable-compression` 仅为配置兼容而保留，实际始终不压缩。
+
+原因：v1 上报体很小，压缩收益有限；代理支持需要额外解析代理协议与 TLS 隧道，暂不在 A05 范围。
+影响：必须经 HTTP 代理访问面板的部署目前无法直接使用 Rust agent；需要直连或使用系统级
+透明代理。`--disable-compression` 不会改变行为。
+
+## D-022 `month_rotate` / netstatic 月度流量统计未实现
+
+- **Go**：`month_rotate != 0` 时启动 `netstatic`，网络 `totalUp`/`totalDown` 按月度重置点统计。
+- **Rust**：`month_rotate` 仍被解析和记录，但上报的 `totalUp`/`totalDown` 始终是内核计数器
+  自启动以来的累计值，不做月度重置。
+
+原因：netstatic 的持久化/月度滚动属于独立功能，A05 未包含。
+影响：依赖月度流量重置的面板统计会看到累计值；需要该行为时应在 A03/A05 后续任务补齐。

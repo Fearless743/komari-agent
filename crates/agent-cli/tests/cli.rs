@@ -98,7 +98,7 @@ fn help_and_version_exit_successfully() {
 }
 
 #[test]
-fn valid_flags_start_the_loop_and_exhaust_retries_cleanly() {
+fn retry_exhaustion_exits_with_failure() {
     let args = offline_args_with_update(&[]);
     let output = agent()
         .env("RUST_LOG", "info")
@@ -106,7 +106,8 @@ fn valid_flags_start_the_loop_and_exhaust_retries_cleanly() {
         .output()
         .expect("run komari-agent");
 
-    assert_eq!(output.status.code(), Some(0));
+    // Non-zero so systemd Restart=on-failure starts the agent again.
+    assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     // The token must never be printed in clear text.
     assert!(!stderr.contains("token: \"secret\""), "stderr: {stderr}");
@@ -119,7 +120,7 @@ fn boolean_flags_do_not_consume_the_next_token() {
     let args = offline_args_with_update(&["foo"]);
     let output = agent().args(args).output().expect("run komari-agent");
 
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("disable_auto_update: true"),
@@ -128,7 +129,7 @@ fn boolean_flags_do_not_consume_the_next_token() {
 
     let args = offline_args_with_update(&["-u", "foo"]);
     let output = agent().args(args).output().expect("run komari-agent");
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("ignore_unsafe_cert: true"),
@@ -138,20 +139,14 @@ fn boolean_flags_do_not_consume_the_next_token() {
 
 #[test]
 fn boolean_flags_support_the_equals_form() {
-    let args = offline_args(&["--disable-auto-update=false"]);
-    let output = agent().args(args).output().expect("run komari-agent");
-    assert_eq!(output.status.code(), Some(0));
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("disable_auto_update: false"),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
+    // `--disable-auto-update=false` would start a real update check, so the
+    // parsing assertion lives in the binary unit tests; here we only exercise
+    // the offline enabled form end to end.
     let enabled = agent()
         .args(offline_args_with_update(&[]))
         .output()
         .expect("run komari-agent");
-    assert_eq!(enabled.status.code(), Some(0));
+    assert_eq!(enabled.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&enabled.stderr).contains("disable_auto_update: true"),
         "stderr: {}",
@@ -164,7 +159,7 @@ fn positional_arguments_are_ignored_like_go() {
     let args = offline_args_with_update(&["some-positional", "another"]);
     let output = agent().args(args).output().expect("run komari-agent");
 
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(1));
 }
 
 #[test]
@@ -176,6 +171,8 @@ fn negative_numbers_are_accepted() {
             "--endpoint",
             "http://127.0.0.1:1",
             "--disable-auto-update",
+            "--reconnect-interval",
+            "0",
             "--interval",
             "-1",
             "--max-retries",
@@ -184,7 +181,20 @@ fn negative_numbers_are_accepted() {
         .output()
         .expect("run komari-agent");
 
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn month_rotate_flag_is_accepted() {
+    let args = offline_args_with_update(&["--month-rotate", "5"]);
+    let output = agent().args(args).output().expect("run komari-agent");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("month_rotate: 5"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -206,6 +216,7 @@ fn check_mem_prints_the_go_sections() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--- Memory Check ---"), "{stdout}");
     assert!(stdout.contains("MemTotal: 4 MiB"), "{stdout}");
+    assert!(stdout.contains("[callFree]"), "{stdout}");
     assert!(stdout.contains("--- Current Configured ---"), "{stdout}");
 }
 
@@ -230,7 +241,7 @@ fn list_disk_prints_a_partition_table() {
     assert!(stdout.contains("Mountpoint\tFstype"), "{stdout}");
     assert!(stdout.contains("/data\txfs"), "{stdout}");
     assert!(
-        stdout.contains("Monitoring Mountpoints: [\"/\", \"/data\"]"),
+        stdout.contains("Monitoring Mountpoints: [/ /data]"),
         "{stdout}"
     );
 }

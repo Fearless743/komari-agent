@@ -126,15 +126,13 @@ cargo test -p agent-discovery -p agent-update
    但不支持任意自定义更新服务器。
 5. **IDN 边界**：Rust 使用 `idna` crate，Go 使用 `golang.org/x/net/idna`；极端非法域名
    的接受/拒绝集合可能不同，常规 Punycode 转换一致。
-6. **更新请求的自定义 DNS（待 A0x 接线）**：能力已提供——`agent-discovery` 导出
-   `build_reqwest_client`（基于 reqwest `dns_resolver` 钩子），`agent-update` 通过
-   `ReqwestUpdateHttp::with_client` 接受该 client，并有 mock DNS 集成测试。但 A06 没有接入 CLI
-   主循环，生产路径默认仍是系统 DNS；**待 A0x/CLI 任务按
-   `Updater::new(options, Arc::new(ReqwestUpdateHttp::with_client(client)))` 注入
-   `custom_dns` + `prefer_ip_version` 构造的 client** 后才算运行时对等。
+6. **更新请求的自定义 DNS**：`agent-discovery` 导出 `build_reqwest_client`（基于 reqwest
+   `dns_resolver` 钩子），`agent-update` 通过 `ReqwestUpdateHttp::with_client` 接受该 client。
+   A05 已在 `agent-cli` 的 `RuntimeDeps::production` 中注入按 `custom_dns` +
+   `prefer_ip_version` 构造的 client，更新检查/下载与面板连接使用同一解析策略。
 7. **404 / 无匹配资产**：与 Go `UpdateCommand` 一致，`check_and_update` 在 release 列表为空、
    当前平台无匹配 asset 或仓库 404 时返回 `UpdateOutcome::UpToDate`，不会下载或替换任何文件；
    `check_latest` 仍返回 `NoRelease`/`NoAsset`/`HttpStatus` 以便诊断。
-8. **CLI 周期循环与 42 退出（待 A0x 接线）**：`Updater::run_periodic` 与
-   `UpdateOutcome::exit_code` 已实现并有测试，但 A06 没有接入 CLI 主循环；实际调用
-   `run_periodic` 并在 `Updated` 时以 42 退出需由后续 CLI 任务完成。
+8. **CLI 周期循环与 42 退出**：A05 已接入。启动时先同步执行一次
+   `Updater::check_and_update()`，`Updated` 直接映射为退出码 42；随后通过
+   `Updater::run_periodic` 每 6 小时检查，`disable_auto_update` 会完全跳过更新依赖。
