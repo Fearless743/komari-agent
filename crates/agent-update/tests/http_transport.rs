@@ -70,20 +70,21 @@ async fn start_dns() -> SocketAddr {
 async fn start_server() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let port = address.port();
 
     tokio::spawn(async move {
         loop {
             let Ok((socket, _)) = listener.accept().await else {
                 break;
             };
-            tokio::spawn(handle(socket));
+            tokio::spawn(handle(socket, port));
         }
     });
 
     address
 }
 
-async fn handle(mut socket: TcpStream) {
+async fn handle(mut socket: TcpStream, port: u16) {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 512];
 
@@ -107,6 +108,12 @@ async fn handle(mut socket: TcpStream) {
     match path {
         "/redirect" => {
             let response = "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = socket.write_all(response.as_bytes()).await;
+        }
+        "/redirect-cross" => {
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://other.test:{port}/final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
             let _ = socket.write_all(response.as_bytes()).await;
         }
         "/slow" => {
@@ -236,6 +243,35 @@ async fn custom_dns_client_resolves_update_host() {
     let response = http
         .send(request(
             format!("http://updates.test:{}/final", address.port()),
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body, b"asset");
+}
+
+#[tokio::test]
+async fn cross_host_redirect_uses_custom_dns() {
+    let address = start_server().await;
+    let dns_address = start_dns().await;
+
+    let resolver = DnsResolver::new(ResolverConfig {
+        custom_dns: Some(dns_address.to_string()),
+        timeout: Duration::from_secs(1),
+        fallback_servers: Vec::new(),
+        system_fallback: false,
+        prefer_ip: PreferIp::V4,
+    })
+    .unwrap();
+
+    let client = build_reqwest_client(resolver, Duration::from_secs(2), false).unwrap();
+    let http = ReqwestUpdateHttp::with_client(client);
+
+    let response = http
+        .send(request(
+            format!("http://first.test:{}/redirect-cross", address.port()),
             None,
         ))
         .await
