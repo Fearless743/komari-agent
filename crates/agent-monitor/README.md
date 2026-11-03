@@ -85,3 +85,6 @@ let options = MonitorOptions::from_env_lookup(&|key| std::env::var(key).ok());
   统一取 `os-release` 的 `PRETTY_NAME`。
 - 虚拟化回退到 DMI 时，KVM 客户机通常同时暴露 QEMU 字符串；已优先匹配 KVM，
   但极少数环境可能得到 `qemu` 而非 `kvm`。正常系统会先命中 `systemd-detect-virt`。
+- 注入的 `proc_root` 不可读时，Linux 会退回本机 `sysinfo` 数据（与默认 `/proc`
+  的行为一致）。容器内 `HOST_PROC` 配置错误时，这可能报告容器自身的指标而不是宿主机
+  指标；部署后请检查首次采集的内存总量是否符合预期。

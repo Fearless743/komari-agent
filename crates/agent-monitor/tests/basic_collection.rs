@@ -346,6 +346,23 @@ fn real_environment_smoke_test() {
 }
 
 #[test]
+fn virtualization_detection_is_safe_with_injected_proc_root() {
+    let fixture = Fixture::full();
+    let collector = fixture.collector();
+
+    // The probe order may hit the host's systemd-detect-virt, so only invariants
+    // are asserted: detection must return an owned, control-character-free
+    // string and must never panic.
+    let virtualization = collector.collect_virtualization();
+    assert!(!virtualization.contains('\0'));
+    assert!(virtualization.chars().all(|ch| !ch.is_control()));
+
+    let empty = Fixture::empty();
+    let fallback = empty.collector().collect_virtualization();
+    assert!(!fallback.contains('\0'));
+}
+
+#[test]
 fn basic_info_matches_go_field_semantics() {
     let fixture = Fixture::full();
     let collector = fixture.collector();
