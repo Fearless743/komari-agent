@@ -214,22 +214,46 @@ fn detect_proxmox(options: &MonitorOptions) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn proxmox_version_output(options: &MonitorOptions) -> Option<String> {
-    let root_binary = options.root_path("usr/bin/pveversion");
-    let binary = if !is_default_root(options) && is_executable(&root_binary) {
-        root_binary
+    // Only the default root may consult the host PATH. With an injected root,
+    // detection must not depend on host tools unless `process_path` is explicit.
+    let host_path = if is_default_root(options) {
+        std::env::var_os("PATH")
     } else {
-        let path = options
-            .process_path
-            .clone()
-            .or_else(|| std::env::var_os("PATH"));
-        find_in_path("pveversion", path.as_deref())?
+        None
     };
+    let binary = pveversion_binary(options, host_path.as_deref())?;
 
     let output = Command::new(binary).output().ok()?;
     if !output.status.success() {
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Resolve `pveversion` for the current root.
+///
+/// `host_path` is only consulted when `options.root` is `/`. For an injected
+/// root the binary must come from `<root>/usr/bin/pveversion` or an explicitly
+/// injected [`MonitorOptions::process_path`]; otherwise detection is skipped.
+#[cfg(target_os = "linux")]
+fn pveversion_binary(
+    options: &MonitorOptions,
+    host_path: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    if is_default_root(options) {
+        let path = options.process_path.as_deref().or(host_path);
+        return find_in_path("pveversion", path);
+    }
+
+    let root_binary = options.root_path("usr/bin/pveversion");
+    if is_executable(&root_binary) {
+        return Some(root_binary);
+    }
+
+    options
+        .process_path
+        .as_deref()
+        .and_then(|path| find_in_path("pveversion", Some(path)))
 }
 
 /// Resolve an executable through an injected `PATH` value.
@@ -692,6 +716,92 @@ mod tests {
         assert_eq!(
             super::detect_proxmox(&options).as_deref(),
             Some("Proxmox VE 8.2.4 (bookworm)")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn injected_root_ignores_host_path_for_pve() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        use tempfile::TempDir;
+
+        let root = TempDir::new().expect("temp root");
+        fs::create_dir_all(root.path().join("etc")).unwrap();
+        fs::write(
+            root.path().join("etc/os-release"),
+            "PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nVERSION_CODENAME=bookworm\n",
+        )
+        .unwrap();
+
+        let host_bin = TempDir::new().expect("host bin");
+        let fake = host_bin.path().join("pveversion");
+        fs::write(
+            &fake,
+            "#!/bin/sh\nprintf 'pve-manager/8.2.4/6f5f9f2c7b9c0e1a\\n'\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&fake).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&fake, permissions).unwrap();
+
+        let options = crate::options::MonitorOptions::default().with_root(root.path());
+
+        // Even with a host PATH containing pveversion, an injected root must
+        // not use it unless process_path is explicitly provided.
+        assert_eq!(
+            super::pveversion_binary(&options, Some(host_bin.path().as_os_str())),
+            None
+        );
+        assert_eq!(super::detect_proxmox(&options), None);
+        assert_eq!(super::os_name(&options), "Debian GNU/Linux 12 (bookworm)");
+
+        let explicit = options
+            .clone()
+            .with_process_path(host_bin.path().as_os_str());
+        assert_eq!(
+            super::pveversion_binary(&explicit, None),
+            Some(host_bin.path().join("pveversion"))
+        );
+        assert_eq!(
+            super::detect_proxmox(&explicit).as_deref(),
+            Some("Proxmox VE 8.2.4 (bookworm)")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn default_root_uses_host_path_but_process_path_overrides_it() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        use tempfile::TempDir;
+
+        fn executable_pveversion(dir: &std::path::Path) -> std::path::PathBuf {
+            let binary = dir.join("pveversion");
+            fs::write(&binary, "#!/bin/sh\n").unwrap();
+            let mut permissions = fs::metadata(&binary).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&binary, permissions).unwrap();
+            binary
+        }
+
+        let host_bin = TempDir::new().expect("host bin");
+        let host_binary = executable_pveversion(host_bin.path());
+        let override_bin = TempDir::new().expect("override bin");
+        let override_binary = executable_pveversion(override_bin.path());
+
+        let options = crate::options::MonitorOptions::default();
+        assert_eq!(
+            super::pveversion_binary(&options, Some(host_bin.path().as_os_str())),
+            Some(host_binary)
+        );
+
+        let options = options.with_process_path(override_bin.path().as_os_str());
+        assert_eq!(
+            super::pveversion_binary(&options, Some(host_bin.path().as_os_str())),
+            Some(override_binary)
         );
     }
 
