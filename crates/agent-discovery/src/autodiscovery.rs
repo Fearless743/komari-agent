@@ -11,6 +11,7 @@
 //! The HTTP client and the configuration path are injectable so tests never
 //! touch the network or the real executable directory.
 
+use std::fmt;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -29,7 +30,7 @@ use crate::idna::convert_url_to_ascii;
 pub const AUTO_DISCOVERY_FILE: &str = "auto-discovery.json";
 
 /// Credentials persisted after a successful registration.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutoDiscoveryConfig {
     #[serde(default)]
     pub uuid: String,
@@ -38,7 +39,7 @@ pub struct AutoDiscoveryConfig {
 }
 
 /// Result of [`AutoDiscovery::handle`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DiscoveryResult {
     /// Panel endpoint that should be used with these credentials.
     pub endpoint: String,
@@ -46,6 +47,31 @@ pub struct DiscoveryResult {
     /// `true` when a new registration was performed, `false` when an existing
     /// file was reused.
     pub registered: bool,
+}
+
+impl fmt::Debug for AutoDiscoveryConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AutoDiscoveryConfig")
+            .field("uuid", &self.uuid)
+            .field("token", &masked_token(&self.token))
+            .finish()
+    }
+}
+
+impl fmt::Debug for DiscoveryResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DiscoveryResult")
+            .field("endpoint", &self.endpoint)
+            .field("config", &self.config)
+            .field("registered", &self.registered)
+            .finish()
+    }
+}
+
+fn masked_token(token: &str) -> &str {
+    if token.is_empty() { "" } else { "******" }
 }
 
 /// An HTTP request understood by [`HttpClient`].
@@ -546,5 +572,22 @@ mod tests {
         .expect("non-http scheme must fail");
 
         assert!(matches!(error, DiscoveryError::InvalidEndpoint(_)));
+    }
+    #[test]
+    fn debug_output_masks_token() {
+        let config = AutoDiscoveryConfig {
+            uuid: "uuid-1".to_owned(),
+            token: "super-secret".to_owned(),
+        };
+        let result = DiscoveryResult {
+            endpoint: "https://panel.example.com".to_owned(),
+            config,
+            registered: true,
+        };
+
+        let rendered = format!("{result:?}");
+        assert!(rendered.contains("uuid-1"));
+        assert!(!rendered.contains("super-secret"));
+        assert!(rendered.contains("******"));
     }
 }
