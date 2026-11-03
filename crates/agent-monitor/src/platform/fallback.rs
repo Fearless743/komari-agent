@@ -43,3 +43,44 @@ pub(crate) fn cpu_brand() -> Option<String> {
         .map(|cpu| cpu.brand().trim().to_owned())
         .filter(|brand| !brand.is_empty())
 }
+
+/// RAM information from `sysinfo`.
+///
+/// `includeCache` maps to `total - free`; the other modes map to
+/// `total - available`, which is what gopsutil reports on non-Linux systems.
+pub(crate) fn memory(mode: crate::types::MemoryMode) -> crate::types::MemoryInfo {
+    let Ok(system) = System::new_all() else {
+        return crate::types::MemoryInfo {
+            mode,
+            ..Default::default()
+        };
+    };
+
+    let total = system.total_memory();
+    let free = system.free_memory();
+    let available = system.available_memory().min(total);
+    let used = match mode {
+        crate::types::MemoryMode::IncludeCache => total.saturating_sub(free),
+        _ => total.saturating_sub(available),
+    };
+
+    crate::types::MemoryInfo {
+        total,
+        used,
+        available,
+        free,
+        mode,
+    }
+}
+
+/// Swap information from `sysinfo`.
+pub(crate) fn swap() -> crate::types::SwapInfo {
+    let Ok(system) = System::new_all() else {
+        return crate::types::SwapInfo::default();
+    };
+
+    crate::types::SwapInfo {
+        total: system.total_swap(),
+        used: system.used_swap(),
+    }
+}

@@ -1,0 +1,88 @@
+//! Memory and swap collection.
+//!
+//! The accounting modes mirror the Go agent:
+//!
+//! | Go flag / platform        | Mode           | Used calculation |
+//! |---------------------------|----------------|------------------|
+//! | `memory_include_cache`    | `includeCache` | `total - free` |
+//! | `memory_report_raw_used`  | `htoplike`     | `total - (free + cached + sreclaimable + buffers) + shmem` |
+//! | Linux default             | `htoplike`     | same as above |
+//! | non-Linux default         | `gopsutil`     | `total - available` |
+
+use crate::options::MonitorOptions;
+use crate::platform;
+use crate::procfs::{ProcMemInfo, read_meminfo};
+use crate::types::{MemoryInfo, MemoryMode, SwapInfo};
+
+/// Select the accounting mode using Go's precedence:
+/// `include_cache` first, then `report_raw_used`, then the platform default.
+pub(crate) fn mode(options: &MonitorOptions) -> MemoryMode {
+    if options.memory_include_cache {
+        MemoryMode::IncludeCache
+    } else if options.memory_report_raw_used {
+        MemoryMode::HtopLike
+    } else {
+        #[cfg(target_os = "linux")]
+        const DEFAULT_MODE: MemoryMode = MemoryMode::HtopLike;
+        #[cfg(not(target_os = "linux"))]
+        const DEFAULT_MODE: MemoryMode = MemoryMode::Gopsutil;
+        DEFAULT_MODE
+    }
+}
+
+/// Collect RAM information.
+pub(crate) fn collect(options: &MonitorOptions) -> MemoryInfo {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(info) = read_meminfo(&options.proc_root)
+            && info.mem_total > 0
+        {
+            return from_meminfo(&info, mode(options));
+        }
+    }
+
+    platform::fallback::memory(mode(options))
+}
+
+/// Build a [`MemoryInfo`] from raw `/proc/meminfo` counters.
+pub(crate) fn from_meminfo(info: &ProcMemInfo, mode: MemoryMode) -> MemoryInfo {
+    let total = info.mem_total;
+    let used = match mode {
+        MemoryMode::IncludeCache => total.saturating_sub(info.mem_free),
+        MemoryMode::HtopLike => info.htop_used(),
+        MemoryMode::Gopsutil => total.saturating_sub(info.available()),
+    };
+
+    MemoryInfo {
+        total,
+        used,
+        available: info.available(),
+        free: info.mem_free,
+        mode,
+    }
+}
+
+/// Collect swap information.
+pub(crate) fn collect_swap(options: &MonitorOptions) -> SwapInfo {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(info) = read_meminfo(&options.proc_root) {
+            return swap_from_meminfo(&info);
+        }
+    }
+
+    platform::fallback::swap()
+}
+
+/// Swap used is `total - free - cached`, with the same underflow guard as Go.
+pub(crate) fn swap_from_meminfo(info: &ProcMemInfo) -> SwapInfo {
+    let total = info.swap_total;
+    let deductions = info.swap_free.saturating_add(info.swap_cached);
+    let used = if total >= deductions {
+        total - deductions
+    } else {
+        total.saturating_sub(info.swap_free)
+    };
+
+    SwapInfo { total, used }
+}

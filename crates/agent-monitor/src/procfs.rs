@@ -123,6 +123,106 @@ pub fn read_proc_stat(proc_root: &Path) -> Result<ProcStat, MonitorError> {
     parse_proc_stat(&content)
 }
 
+/// Raw memory counters from `/proc/meminfo`, in bytes.
+///
+/// Field set and byte conversion match Go's `monitoring.ProcMemInfo`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProcMemInfo {
+    pub mem_total: u64,
+    pub mem_free: u64,
+    pub mem_available: u64,
+    pub buffers: u64,
+    pub cached: u64,
+    pub swap_total: u64,
+    pub swap_free: u64,
+    pub swap_cached: u64,
+    pub shmem: u64,
+    pub s_reclaimable: u64,
+    pub zswap: u64,
+    pub zswapped: u64,
+}
+
+impl ProcMemInfo {
+    /// Available memory reported by the kernel, falling back to
+    /// `total - free - buffers - cached` on old kernels without `MemAvailable`.
+    pub fn available(&self) -> u64 {
+        if self.mem_available > 0 {
+            self.mem_available.min(self.mem_total)
+        } else {
+            self.mem_total.saturating_sub(
+                self.mem_free
+                    .saturating_add(self.buffers)
+                    .saturating_add(self.cached),
+            )
+        }
+    }
+
+    /// htop-like used memory, matching Go's `GetMemHtopLike`:
+    /// `total - (free + cached + sreclaimable + buffers) + shmem`.
+    ///
+    /// If the reclaimable sum is larger than the total (possible on some
+    /// container/initramfs setups), it falls back to `total - free` like Go
+    /// instead of underflowing.
+    pub fn htop_used(&self) -> u64 {
+        let reclaimable = self
+            .mem_free
+            .saturating_add(self.cached)
+            .saturating_add(self.s_reclaimable)
+            .saturating_add(self.buffers);
+        let base = if self.mem_total >= reclaimable {
+            self.mem_total - reclaimable
+        } else {
+            self.mem_total.saturating_sub(self.mem_free)
+        };
+        base.saturating_add(self.shmem)
+    }
+}
+
+/// Parse `/proc/meminfo`.
+///
+/// Unknown keys and malformed values are ignored, matching the Go parser. All
+/// values are in kB and converted to bytes.
+pub fn parse_meminfo(content: &str) -> ProcMemInfo {
+    let mut info = ProcMemInfo::default();
+
+    for line in content.lines() {
+        let mut fields = line.split_whitespace();
+        let Some(key) = fields.next() else {
+            continue;
+        };
+        let Some(value) = fields.next().and_then(|value| value.parse::<u64>().ok()) else {
+            continue;
+        };
+        let value = value.saturating_mul(1024);
+        let key = key.trim_end_matches(':');
+
+        match key {
+            "MemTotal" => info.mem_total = value,
+            "MemFree" => info.mem_free = value,
+            "MemAvailable" => info.mem_available = value,
+            "Buffers" => info.buffers = value,
+            "Cached" => info.cached = value,
+            "SwapTotal" => info.swap_total = value,
+            "SwapFree" => info.swap_free = value,
+            "SwapCached" => info.swap_cached = value,
+            "Shmem" => info.shmem = value,
+            "SReclaimable" => info.s_reclaimable = value,
+            "Zswap" => info.zswap = value,
+            "Zswapped" => info.zswapped = value,
+            _ => {}
+        }
+    }
+
+    info
+}
+
+/// Read and parse `<proc_root>/meminfo`.
+pub fn read_meminfo(proc_root: &Path) -> Result<ProcMemInfo, MonitorError> {
+    let path = proc_root.join("meminfo");
+    let content = fs::read_to_string(&path).map_err(|source| MonitorError::io(&path, source))?;
+    Ok(parse_meminfo(&content))
+}
+
 /// Compute usage percentages between two samples.
 ///
 /// Counters that moved backwards (container migration, kernel counter reset)

@@ -17,6 +17,7 @@
 
 mod cpu;
 mod error;
+mod memory;
 mod options;
 mod os;
 mod platform;
@@ -26,7 +27,8 @@ mod types;
 pub use error::MonitorError;
 pub use options::{DEFAULT_PROC_ROOT, HOST_PROC_ENV, MonitorOptions};
 pub use procfs::{
-    CpuTimes, CpuUsage, ProcStat, parse_proc_stat, read_proc_stat, usage_between,
+    CpuTimes, CpuUsage, ProcMemInfo, ProcStat, parse_meminfo, parse_proc_stat, read_meminfo,
+    read_proc_stat, usage_between,
 };
 pub use types::{
     BasicInfo, CpuInfo, LoadAverage, MemoryInfo, MemoryMode, OsInfo, SwapInfo, SystemSnapshot,
