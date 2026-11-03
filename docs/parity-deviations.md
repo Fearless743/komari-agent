@@ -161,3 +161,44 @@ workflow 只上传裸二进制 `komari-agent-{os}-{arch}[.exe]`，因此正常�
 解析成功；Go 会直接失败。需要严格对齐时设置 `ResolverConfig::system_fallback = false`。
 
 状态：任务要求的增强，不影响正常路径。
+
+## D-013 月流量采样点跟随上报周期
+
+- **Go**：`netstatic.StartOrContinue()` 启动后台 ticker，每 2 秒采样一次，每 600 秒
+  落盘。
+- **Rust**：`NetStaticStore` 在每次 `collect_network()` / `collect_report_metrics()`
+  时采样并原子写盘，没有常驻线程。
+
+原因：本 crate 是库，不应在构造 `Collector` 时隐式启动后台线程；上报循环本身
+就是最自然的采样点。
+
+影响：上报间隔大于 2 秒时，月流量数据库的时间分辨率变粗，但累计值仍然正确
+（每次采样记录与上次采样的差值）。需要秒级分辨率时可缩短上报间隔或后续增加
+独立采样任务。
+
+状态：有意差异，待对等验收确认。
+
+## D-014 Linux 连接数失败时不回退 netlink
+
+- **Go**：`/proc/net` 不可读时回退 `gopsutil net.Connections`（netlink）。
+- **Rust**：只实现 `/proc/net/{tcp,tcp6,udp,udp6}` 快路径；失败时上报 0 并写入
+  `message`。
+
+原因：避免引入 netlink socket 枚举的大量平台代码；任务要求覆盖 `/proc` fixture 与
+`HOST_PROC`。
+
+影响：在 `/proc` 完全不可用但 netlink 可用的极端环境中，Go 能报告连接数，Rust 为 0。
+
+状态：已知限制，待后续补齐。
+
+## D-015 空 GPU 详细结果省略 `gpu`
+
+- **Go**：详细探测成功但设备数为 0 时仍输出 `count:0`，并计算 `0/0 = NaN`，随后
+  `json.Marshal` 失败导致整包为空。
+- **Rust**：设备数为 0 时尝试 `models` 回退，仍为空则省略 `gpu`。
+
+原因：避免向协议层输出 NaN 或空报告。
+
+影响：无 GPU 的 `--enable-gpu` 部署不再出现 Go 的空包/NaN 路径；其它字段正常上报。
+
+状态：有意修复。

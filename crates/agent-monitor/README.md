@@ -1,7 +1,7 @@
 # agent-monitor
 
-Komari Agent 的基础系统指标采集库。当前范围仅包含 **CPU、内存、Swap、负载、OS、
-uptime 与虚拟化**；磁盘、网络、GPU 由 A03 实现，IP/进程数与上报协议由后续任务实现。
+Komari Agent 的系统指标采集库：**CPU、内存、Swap、负载、磁盘、网络、连接数、
+进程数、GPU、OS、uptime 与虚拟化**。IP 地址与上报协议由后续任务实现。
 
 ## 快速开始
 
@@ -13,6 +13,8 @@ let collector = Collector::new(MonitorOptions::default());
 // 周期上报：不探测 OS / 虚拟化，可每秒调用。
 let report = collector.collect_report_metrics();
 println!("cpu: {:.2}%", report.cpu.usage);
+println!("disk: {} / {}", report.disk.used, report.disk.total);
+println!("net: {}/s", report.network.total_down);
 
 // 基础信息：Go 每 5 分钟调用一次，内部会探测发行版与虚拟化。
 let basic = collector.collect_basic_info();
@@ -24,7 +26,7 @@ println!("os: {} kernel: {}", basic.os, basic.kernel_version);
 
 ## 采集 API 与线格式边界
 
-A02 只提供数据类型；真正的协议编码由 A04/A05 负责。
+本 crate 只提供数据类型与采集；真正的协议编码由 A04/A05 负责。
 
 | 方法 | 返回类型 | 是否探测 OS/虚拟化 | 建议调用频率 |
 |---|---|---|---|
@@ -32,7 +34,7 @@ A02 只提供数据类型；真正的协议编码由 A04/A05 负责。
 | `collect_basic_info()` | `BasicInfo` | 是 | 与 Go 一致，约 5 分钟 |
 | `collect()` | `SystemSnapshot` | 是 | 诊断/测试 |
 
-`ReportMetrics` 与 Go `monitoring.GenerateReport()` 的子集同形：
+`ReportMetrics` 与 Go `monitoring.GenerateReport()` 同形：
 
 ```json
 {
@@ -40,11 +42,18 @@ A02 只提供数据类型；真正的协议编码由 A04/A05 负责。
   "ram": {"total": 0, "used": 0},
   "swap": {"total": 0, "used": 0},
   "load": {"load1": 0.0, "load5": 0.0, "load15": 0.0},
-  "uptime": 0
+  "disk": {"total": 0, "used": 0},
+  "network": {"up": 0, "down": 0, "totalUp": 0, "totalDown": 0},
+  "connections": {"tcp": 0, "udp": 0},
+  "uptime": 0,
+  "process": 0,
+  "message": ""
 }
 ```
 
-其中 CPU 使用率套用 Go 的下限：`usage <= 0.001` 时上报 `0.001`。
+`gpu` 仅在 `enable_gpu = true` 且探测到 GPU 时出现。CPU 使用率套用 Go 的下限：
+`usage <= 0.001` 时上报 `0.001`。网络/连接/GPU 失败不会影响其它字段，只写入
+`message`（与 Go 的错误文本前缀一致）。
 
 `SystemSnapshot` **不是线格式**：它的 CPU 字段沿用 Go `monitoring.CpuInfo` 的键
 （`cpu_name`、`cpu_usage` 等），`ram` 额外提供 `available`/`free`，并混有
@@ -140,16 +149,79 @@ strict 模式行为与之对齐，非 strict 模式则提供本机回退。
 | `ReportMetrics.ram.total/used` | `ram.total/used` | `monitoring.Ram()` |
 | `ReportMetrics.swap.total/used` | `swap.total/used` | `monitoring.Swap()` |
 | `ReportMetrics.load.load1/5/15` | `load.load1/5/15` | `monitoring.Load()` |
+| `ReportMetrics.disk.total/used` | `disk.total/used` | `monitoring.Disk()` |
+| `ReportMetrics.network.up/down` | `network.up/down` | `NetworkSpeed()` 两次采样的差值 |
+| `ReportMetrics.network.total_up/down` | `network.totalUp/totalDown` | 累计字节；`month_rotate` 时为重置后的累计 |
+| `ReportMetrics.connections.tcp/udp` | `connections.tcp/udp` | `ConnectionsCount()` |
+| `ReportMetrics.process` | `process` | `ProcessCount()`（Go `int` -> `i64`） |
+| `ReportMetrics.gpu` | `gpu` | `GetDetailedGPUInfo()` 的详细或 `models` 回退形状 |
+| `ReportMetrics.message` | `message` | 采集错误累积文本 |
 | `ReportMetrics.uptime` | `uptime` | `monitoring.Uptime()` |
 
 ### 基础信息（`server/basicInfo.go`）
 
 `BasicInfo` 与 Go 上传键一致：`cpu_name`、`cpu_cores`、`cpu_physical_cores`、`arch`、
-`os`、`kernel_version`、`mem_total`、`swap_total`、`virtualization`。
+`os`、`kernel_version`、`mem_total`、`swap_total`、`disk_total`、`gpu_name`、
+`virtualization`。
 
 `CpuInfo` 的序列化键与 Go `monitoring.CpuInfo` 一致（`cpu_name`、
 `cpu_architecture`、`cpu_cores`、`cpu_physical_cores`、`cpu_usage`），额外提供可选的
 `per_core_usage`。`cpu_physical_cores = 0` 表示未知。
+
+## 磁盘
+
+对应 `monitoring/unit/disk.go`：
+
+- `include_mountpoints` 使用分号分隔；设置后只统计列出的挂载点，读取失败的点直接
+  跳过，不经过物理盘过滤（与 Go 一致）。
+- 未设置时从 `<proc_root>/mounts`（回退 `self/mounts`）枚举，按 Go 的
+  `isPhysicalDisk` 排除 `/tmp`、`/dev`、`/run`、`/proc`、`/sys`、容器目录、
+  `tmpfs`/`overlay`/`fuse` 等伪文件系统、网络盘与 `/dev/loop*`；`/` 永远保留。
+- 同一设备只统计一次，保留 `total` 更大的挂载点；ZFS dataset 归并到 pool。
+- `total`/`used` 来自 `statvfs`，`used = total - f_bfree * f_frsize`（与 gopsutil 一致）。
+- 非 Linux 与 proc 不可读的非 strict 模式使用 `sysinfo`。
+
+## 网络与月流量
+
+对应 `monitoring/unit/net.go` 与 `monitoring/netstatic/static.go`：
+
+- `include_nics` / `exclude_nics` 逗号分隔，使用 Go `filepath.Match` 风格通配符
+  （`*`、`?`、`[...]`）；`br`、`docker`、`veth`、`vmbr`、`lo` 等前缀始终排除。
+- 白名单优先于黑名单；白名单为空时默认包含所有非虚拟接口。
+- `up`/`down` 是两次采样（默认间隔 1 秒）之间的字节差；计数器回绕/重置按 0 处理。
+- 无法读取任何网卡时返回 0 并写入 `message`。
+- `month_rotate != 0` 时，累计量来自 `<net_static_path>`（默认 `./net_static.json`）
+  中 **重置日之后** 的逐接口增量；重置日按本地时区计算，月份不存在该日时顺延到
+  下月 1 日。
+- Linux 从 `<proc_root>/net/dev` 读取累计字节/包；其它平台使用 `sysinfo`。
+
+与 Go 的差异：Go 用后台 goroutine 每 2 秒采样一次；本 crate 在每次上报时采样并
+立即原子写盘，因此 `net_static.json` 的记录间隔等于上报间隔，且不会在没有上报时
+持续积累（已登记 D-013）。
+
+## 连接数与进程数
+
+对应 `monitoring/unit/ip.go`（连接部分）与 `process_linux.go`：
+
+- TCP = `net/tcp` + `net/tcp6` 数据行，UDP = `net/udp` + `net/udp6`；缺失的单个文件
+  跳过，整族都缺失则视为失败并上报 0。
+- 进程数为 `<proc_root>` 下名称可解析为整数的条目数，`HOST_PROC` 生效。
+- 非 Linux 进程数使用 `sysinfo`；连接数目前只实现 Linux（D-014）。
+
+## GPU
+
+对应 `monitoring/unit/gpu*.go`：
+
+- `gpu_name`（基础信息）Linux 先 `lspci`，再 `/sys/class/drm`；macOS 使用
+  `system_profiler`，FreeBSD 使用 `pciconf`，Windows 返回 `Unknown`。
+- `enable_gpu` 打开详细探测：优先定位并执行 `nvidia-smi -q -x`，XML 解析成功即使用
+  NVIDIA；否则尝试 `rocm-smi --showallinfo --json`（AMD）。Intel 目前仅参与型号
+  识别，不提供详细显存/利用率。
+- 详细形状：`{count, average_usage, detailed_info:[{name,memory_total,memory_used,
+  utilization,temperature}]}`；详细探测失败但型号可用时输出 `{"models":[...]}`。
+- 工具缺失、无 GPU、XML/JSON 损坏都只导致 `gpu` 缺失，其它指标不受影响。
+- 测试可通过 `with_gpu_tools()` 注入 `nvidia-smi`/`rocm-smi` 路径与 `PATH`，不依赖
+  真实 GPU。
 
 ## 物理核心数
 
@@ -191,8 +263,10 @@ Linux 按 Go 的顺序检测：Android（`getprop`/`build.prop`/目录）、Prox
 
 - **Linux**：完整实现，读取注入的 proc/sys/root。
 - **macOS / FreeBSD / Windows**：通过 `sysinfo` 提供 CPU、内存、Swap、负载（Windows
-  无负载平均值，返回 0）、uptime、OS 名称与内核版本；虚拟化探测在 macOS 使用
-  `sysctl kern.hv_vmm_present`，FreeBSD 使用 `sysctl kern.vm_guest`，Windows 暂返回空。
+  无负载平均值，返回 0）、磁盘、网络、uptime、OS 名称与内核版本；连接数返回 0，
+  详细 GPU 探测不可用（`gpu_name` 在 macOS/FreeBSD 走系统命令，Windows 返回
+  `Unknown`）；虚拟化探测在 macOS 使用 `sysctl kern.hv_vmm_present`，FreeBSD 使用
+  `sysctl kern.vm_guest`，Windows 暂返回空。
 
 ## 已知限制
 
@@ -203,3 +277,9 @@ Linux 按 Go 的顺序检测：Android（`getprop`/`build.prop`/目录）、Prox
 - 非 strict 模式下注入的 `proc_root` 不可读会退回本机 `sysinfo`；容器部署通过
   `from_config` 自动启用 strict 以避免误报。
 - CPU `collect_cpu()` 的采样窗口是两次调用间隔；需要固定窗口时使用 `sample_cpu(window)`。
+- 月流量数据库没有后台采样线程，采样点等于上报点（D-013）。
+- Linux 连接数在 `/proc/net` 不可读时不像 Go 那样回退 netlink，而是上报 0（D-014）。
+- 详细 GPU 探测为空（例如驱动存在但无设备）时省略 `gpu`，不会产生 Go 的
+  `count:0` + `NaN` 平均使用率（D-015）。
+- 磁盘挂载表与网络计数器从注入的 `proc_root` 读取；这与 Go 的 gopsutil 直接读宿主
+  `/proc` 略有不同，容器部署通常更符合预期。
