@@ -17,7 +17,7 @@ Cargo.toml                 # workspace（edition 2024 / resolver 3）+ 统一依
 crates/
   agent-cli/               # 唯一可执行 crate，二进制名 komari-agent
   agent-config/            # 配置结构、默认值、环境变量、JSON 文件与 CLI 覆盖
-  agent-monitor/           # 基础系统采集（CPU/内存/负载/OS/uptime/虚拟化）
+  agent-monitor/           # 系统采集（CPU/内存/磁盘/网络/月流量/连接/进程/GPU/OS/虚拟化）
   agent-protocol/          # 上报协议 v1（仅 v1，v2 已按确认裁剪）
   agent-client/            # v1 WebSocket 上报、基础信息上传与重连循环
   agent-discovery/         # 自定义 DNS 解析与自动发现注册

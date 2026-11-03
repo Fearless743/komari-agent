@@ -240,6 +240,7 @@ macOS/FreeBSD/Windows 同样为 0（D-017）。
 与原生进程枚举。
 
 状态：已知限制，待平台任务补齐。
+
 ## D-018 重试耗尽后 CLI 以非零码退出
 
 - **Go**：`EstablishWebSocketConnection` 在 v1 下耗尽 `max_retries` 后返回，root 命令的

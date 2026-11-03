@@ -53,4 +53,4 @@ v2、gzip 与 POST fallback 不存在（D-004）。
 - 重试耗尽后由 CLI 以退出码 1 退出，而不是像 Go root 命令那样立即进入下一轮
   `UpdateBasicInfo + EstablishWebSocketConnection`（见 D-018）；
 - WebSocket 不走 HTTP(S)_PROXY，也不启用 permessage-deflate（见 D-021）；
-  `month_rotate`/netstatic 月度流量未实现（见 D-022）。
+  `month_rotate`/netstatic 月度流量由 A03 提供（见 D-022）。
