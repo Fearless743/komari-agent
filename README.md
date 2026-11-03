@@ -170,8 +170,9 @@ AGENT_TOKEN=your-token AGENT_ENDPOINT=https://panel.example.com ./komari-agent
 - 每 `interval` 秒上报一帧，CPU 固定 1 秒采样窗口（`sample_cpu`），字段与
   `ReportV1` 严格一致；30 秒心跳 Ping，读循环只 drain 服务端帧；
 - 断开后按 `max_retries`、`reconnect_interval` 重连，耗尽后返回并由 CLI 退出；
-- 首次连接成功后立即上传 `BasicInfoV1`，之后每 `info_report_interval` 分钟上传；
-  失败时按 Go 语义去掉 `kernel_version` / `cpu_physical_cores` 再试一次；
+- 启动时先上传一次 `BasicInfoV1`（即使 WS 不可达也会上传），之后每
+  `info_report_interval` 分钟由独立任务上传；失败时按 Go 语义去掉
+  `kernel_version` / `cpu_physical_cores` 再试一次；
 - `auto_discovery_key` 存在时读取/写入 `auto-discovery.json`；启动时先同步检查一次更新
   （`Updated` 映射为退出码 42），随后由 `agent-update::run_periodic` 每 6 小时检查。
 

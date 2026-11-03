@@ -3,7 +3,7 @@
 //! Mirrors the Go helpers:
 //!
 //! * [`build_ws_endpoint`] — `{endpoint}/api/clients/report?token={token}` with
-//!   `http`/`https` rewritten to `ws`/`wss`, one trailing slash removed and the
+//!   `http`/`https` rewritten to `ws`/`wss`, at most one trailing slash removed and the
 //!   host converted to Punycode;
 //! * [`build_basic_info_endpoint`] —
 //!   `{endpoint}/api/clients/uploadBasicInfo?token={token}`.
@@ -62,8 +62,8 @@ pub fn build_basic_info_endpoint(endpoint: &str, token: &str) -> Result<String, 
 
 /// Validate and normalize an `http`/`https` endpoint.
 ///
-/// The returned string has no trailing slash and keeps any path prefix, so
-/// `https://panel.example/komari/` becomes
+/// At most one trailing slash is removed (Go `strings.TrimSuffix`); any path
+/// prefix is kept, so `https://panel.example/komari/` becomes
 /// `https://panel.example/komari/api/clients/...`.
 fn normalize_endpoint(endpoint: &str) -> Result<(String, &'static str), EndpointError> {
     let endpoint = endpoint.trim();
@@ -84,9 +84,9 @@ fn normalize_endpoint(endpoint: &str) -> Result<(String, &'static str), Endpoint
         other => return Err(EndpointError::UnsupportedScheme(other.to_owned())),
     };
 
-    // Keep the original textual form (minus trailing slashes) instead of
-    // `Url::to_string()`, which would add a `/` for a bare origin. IDN
-    // conversion happens once the path has been appended, matching Go.
+    // Keep the original textual form (with at most one trailing slash
+    // removed) instead of `Url::to_string()`, which would add a `/` for a bare
+    // origin. IDN conversion happens once the path has been appended.
     Ok((trimmed.to_owned(), scheme))
 }
 

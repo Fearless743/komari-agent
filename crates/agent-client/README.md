@@ -19,7 +19,8 @@ Komari Agent 的协议 v1 运行链路。对应 Go 的 `server/websocket.go`、
 ## 循环语义
 
 1. 数据 tick 为 `max(1, interval - 1)` 秒，与 Go 为 1 秒采样窗口预留时间一致；
-2. 未连接时先连接，成功后立即发送第一帧；首个成功连接后立即上传基础信息；
+2. 启动时先上传一次基础信息（WS 不可达也会上传），之后由独立任务按
+   `info_report_interval` 周期上传；未连接时先连接，成功后立即发送第一帧；
 3. 每 30 秒发送 Ping；读任务只消费服务端帧，收到 Close/读错误时通知主循环；
 4. 发送或心跳失败会关闭连接，下个数据 tick 按 `max_retries + 1` 次尝试、
    `reconnect_interval` 间隔重连（最后一次失败后同样 sleep 再返回）；
@@ -31,10 +32,13 @@ v2、gzip 与 POST fallback 不存在（D-004）。
 
 - URL：http/https、IDN、尾斜杠/路径、IPv4/IPv6、非法 endpoint；
 - 映射：全字段、CPU 下限、GPU 详细形状与型号回退、零值 section；
-- 基础信息：首传、兼容字段回退、双失败、字段形状；
-- 循环：通道 mock 覆盖首帧、心跳、服务端关闭/读错误重连、重试耗尽、周期基础信息；
+- 基础信息：启动首传（WS 不可达仍上传）、周期上传不阻塞上报/心跳、
+  兼容字段回退、双失败、CF Access 头、字段形状；
+- 循环：通道 mock 覆盖首帧、心跳、服务端关闭/读错误重连、发送/心跳失败重连、
+  重试耗尽、最终失败 sleep、旧 disconnect generation；
 - 真实 transport：本地 `tokio-tungstenite` mock server 完成握手、文本帧与 close；
-- 补充采集：网卡过滤通配符、虚拟文件系统排除、mount 转义。
+  自签证书验证 `ignore_unsafe_cert` 开关；
+- 补充采集：网卡过滤通配符、IFF_UP 无 carrier、虚拟文件系统排除、mount 转义。
 
 所有测试均在本机完成，不访问真实面板或 GitHub API。
 
