@@ -335,6 +335,9 @@ impl DnsResolver {
             match tokio::time::timeout(self.config.timeout, query_tcp(address, &packet)).await {
                 Ok(Ok(response)) => {
                     let parsed = parse_response(&response, query_id(&packet))?;
+                    if parsed.truncated {
+                        return Err(DnsError::Truncated);
+                    }
                     check_rcode(parsed.rcode)?;
                     return Ok(records_to_ips(parsed.answers));
                 }

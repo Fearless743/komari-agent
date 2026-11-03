@@ -41,6 +41,15 @@ pub const RESTART_EXIT_CODE: i32 = 42;
 /// Default maximum download size (256 MiB).
 pub const DEFAULT_MAX_DOWNLOAD_SIZE: u64 = 256 * 1024 * 1024;
 
+/// Version compiled into the agent.
+///
+/// `KOMARI_AGENT_VERSION` overrides the Cargo package version at build time,
+/// matching the CLI's version constant and the Go linker flag.
+pub const DEFAULT_CURRENT_VERSION: &str = match option_env!("KOMARI_AGENT_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 /// Update configuration.
 #[derive(Clone, Debug)]
 pub struct UpdateOptions {
@@ -64,7 +73,7 @@ impl Default for UpdateOptions {
     fn default() -> Self {
         Self {
             repo: DEFAULT_REPO.to_owned(),
-            current_version: env!("CARGO_PKG_VERSION").to_owned(),
+            current_version: DEFAULT_CURRENT_VERSION.to_owned(),
             disable_auto_update: false,
             platform: Platform::current(),
             target_path: None,

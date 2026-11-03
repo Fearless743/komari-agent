@@ -34,8 +34,8 @@ pub use http::{HttpRequest, HttpResponse, ReqwestUpdateHttp, UpdateHttp};
 pub use release::{Asset, GithubRelease, Platform, select_asset};
 pub use replace::replace_file_atomically;
 pub use update::{
-    CHECK_INTERVAL, DEFAULT_API_BASE, DEFAULT_MAX_DOWNLOAD_SIZE, DEFAULT_REPO, LatestRelease,
-    RESTART_EXIT_CODE, UpdateOptions, UpdateOutcome, Updater,
+    CHECK_INTERVAL, DEFAULT_API_BASE, DEFAULT_CURRENT_VERSION, DEFAULT_MAX_DOWNLOAD_SIZE,
+    DEFAULT_REPO, LatestRelease, RESTART_EXIT_CODE, UpdateOptions, UpdateOutcome, Updater,
 };
 pub use version::{VersionError, need_update, parse_version};
 
