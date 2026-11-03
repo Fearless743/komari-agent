@@ -282,27 +282,27 @@ parse_args() {
                 ENDPOINT="$2"
                 shift 2
                 ;;
-            --endpoint=*)
-                ENDPOINT="${1#*=}"
-                shift
-                ;;
             --token | -t)
                 need_value "$@"
                 TOKEN="$2"
                 shift 2
                 ;;
-            --token=*)
+            --token=* | -t=*)
                 TOKEN="${1#*=}"
+                shift
+                ;;
+            --endpoint=* | -e=*)
+                ENDPOINT="${1#*=}"
+                shift
+                ;;
+            --interval=* | -i=*)
+                INTERVAL="${1#*=}"
                 shift
                 ;;
             --interval | -i)
                 need_value "$@"
                 INTERVAL="$2"
                 shift 2
-                ;;
-            --interval=*)
-                INTERVAL="${1#*=}"
-                shift
                 ;;
             --config)
                 need_value "$@"

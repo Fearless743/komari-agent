@@ -131,6 +131,9 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     elseif ($arg.StartsWith('--endpoint=')) { $Endpoint = $arg.Substring(11) }
     elseif ($arg.StartsWith('--token=')) { $Token = $arg.Substring(8) }
     elseif ($arg.StartsWith('--interval=')) { $Interval = $arg.Substring(11) }
+    elseif ($arg.StartsWith('-e=')) { $Endpoint = $arg.Substring(3) }
+    elseif ($arg.StartsWith('-t=')) { $Token = $arg.Substring(3) }
+    elseif ($arg.StartsWith('-i=')) { $Interval = $arg.Substring(3) }
     elseif ($arg.StartsWith('--config=')) { $ConfigPath = $arg.Substring(9); $ConfigExplicit = $true }
     elseif ($arg.StartsWith('--install')) { Write-WarningLog "Unknown install parameter: $arg" }
     else { $AgentArgs += $arg }
