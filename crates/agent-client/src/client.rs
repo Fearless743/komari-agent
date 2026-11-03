@@ -364,6 +364,31 @@ mod tests {
         assert!(!disconnect_is_current(None, 7));
     }
 
+    #[tokio::test]
+    async fn queued_old_disconnect_does_not_close_the_new_connection() {
+        let (tx, mut rx) = mpsc::channel::<u64>(4);
+        // The old reader queued its generation before the new connection was
+        // installed.
+        tx.send(1).await.unwrap();
+
+        let mut connection = Some(ActiveConnection {
+            sender: Box::new(NoopSender),
+            reader: tokio::spawn(async {}),
+            generation: 2,
+        });
+
+        let received = rx.recv().await.unwrap();
+        if disconnect_is_current(connection.as_ref(), received) {
+            cleanup(&mut connection).await;
+        }
+
+        assert!(
+            connection.is_some(),
+            "a stale generation closed the new connection"
+        );
+        assert_eq!(connection.as_ref().unwrap().generation, 2);
+    }
+
     struct NoopSender;
 
     #[async_trait::async_trait]
