@@ -35,7 +35,7 @@ pub use report::{
 };
 pub use supplement::{
     BasicSupplement, NetworkTotals, PartitionInfo, SupplementOptions, SupplementSnapshot,
-    SystemSupplement, list_partitions,
+    SystemSupplement, list_partitions, monitoring_mountpoints,
 };
 pub use ws::{
     TungsteniteTransport, WsClientConfig, WsConnection, WsError, WsEvent, WsReceiver, WsSender,

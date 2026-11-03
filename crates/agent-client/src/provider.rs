@@ -63,6 +63,22 @@ impl ReportProvider for MonitorReportProvider {
         let memory = self.collector.collect_memory();
         let swap = self.collector.collect_swap();
         let load = self.collector.collect_load();
+        let mut message = extra.message;
+
+        // Go appends an uptime error to the report message. `collect_uptime`
+        // hides the error behind its fallback, so probe once more to reproduce
+        // the diagnostic (strict mode intentionally stays silent).
+        #[cfg(target_os = "linux")]
+        let uptime = match agent_monitor::read_uptime(&self.collector.options().proc_root) {
+            Ok(uptime) => uptime,
+            Err(error) => {
+                if !self.collector.options().strict_proc {
+                    message.push_str(&format!("failed to get uptime: {error}\n"));
+                }
+                self.collector.collect_uptime()
+            }
+        };
+        #[cfg(not(target_os = "linux"))]
         let uptime = self.collector.collect_uptime();
 
         ReportSample {
@@ -82,7 +98,7 @@ impl ReportProvider for MonitorReportProvider {
             uptime,
             process: extra.process,
             gpu: extra.gpu,
-            message: extra.message,
+            message,
         }
     }
 

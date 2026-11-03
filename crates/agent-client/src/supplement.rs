@@ -127,24 +127,16 @@ impl SystemSupplement {
     ) -> SupplementSnapshot {
         let mut message = String::new();
 
-        let disk = match disk::usage(&self.options) {
-            Ok(usage) => usage,
-            Err(error) => {
-                message.push_str(&format!("failed to get disk usage: {error}\n"));
-                DiskUsage::default()
-            }
-        };
+        // Take the second counter sample immediately after the CPU window,
+        // before any potentially slow disk probing, so the rate divisor and
+        // the counters describe the same interval.
+        let network_result = self.network_totals();
 
-        let network = match (previous, self.network_totals()) {
-            (Some(start), Ok(end)) => {
-                let seconds = elapsed.as_secs_f64().max(0.001);
-                NetworkSample {
-                    up: ((end.up.saturating_sub(start.up)) as f64 / seconds) as u64,
-                    down: ((end.down.saturating_sub(start.down)) as f64 / seconds) as u64,
-                    total_up: end.up,
-                    total_down: end.down,
-                }
-            }
+        // Go ignores disk errors (it reports zero usage silently).
+        let disk = disk::usage(&self.options).unwrap_or_default();
+
+        let network = match (previous, network_result) {
+            (Some(start), Ok(end)) => network_sample(start, end, elapsed),
             (None, Ok(end)) => NetworkSample {
                 total_up: end.up,
                 total_down: end.down,
@@ -174,7 +166,11 @@ impl SystemSupplement {
                 Ok(devices) if !devices.is_empty() => {
                     Some(crate::report::detailed_gpu_report(&devices))
                 }
-                Ok(_) | Err(_) => gpu_models_report(models.clone()),
+                Ok(_) => gpu_models_report(models.clone()),
+                Err(error) => {
+                    message.push_str(&format!("failed to get detailed GPU info: {error}\n"));
+                    gpu_models_report(models.clone())
+                }
             }
         } else {
             None
@@ -215,6 +211,66 @@ impl SystemSupplement {
 /// List all partitions for the `list-disk` command.
 pub fn list_partitions(proc_root: &Path) -> Result<Vec<PartitionInfo>, String> {
     disk::all_partitions(proc_root)
+}
+
+/// Compute the network rate and totals from two counter samples.
+fn network_sample(start: NetworkTotals, end: NetworkTotals, elapsed: Duration) -> NetworkSample {
+    let seconds = elapsed.as_secs_f64().max(0.001);
+    NetworkSample {
+        up: ((end.up.saturating_sub(start.up)) as f64 / seconds) as u64,
+        down: ((end.down.saturating_sub(start.down)) as f64 / seconds) as u64,
+        total_up: end.up,
+        total_down: end.down,
+    }
+}
+
+/// Port of Go's `monitoring.DiskList()`: physical partitions, one per device,
+/// keeping the shortest mountpoint, formatted as `mountpoint (fstype)`.
+pub fn monitoring_mountpoints(
+    proc_root: &Path,
+    include_mountpoints: &str,
+) -> Result<Vec<String>, String> {
+    let include = include_mountpoints.trim();
+    if !include.is_empty() {
+        return Ok(include
+            .split(';')
+            .map(str::trim)
+            .filter(|mountpoint| !mountpoint.is_empty())
+            .map(str::to_owned)
+            .collect());
+    }
+
+    let mut devices: Vec<(String, PartitionInfo)> = Vec::new();
+    for partition in disk::all_partitions(proc_root)? {
+        if !disk::is_physical(&partition) {
+            continue;
+        }
+
+        let key = if partition.fstype.eq_ignore_ascii_case("zfs") {
+            partition
+                .device
+                .split('/')
+                .next()
+                .unwrap_or(&partition.device)
+                .to_owned()
+        } else {
+            partition.device.clone()
+        };
+
+        match devices.iter_mut().find(|(device, _)| *device == key) {
+            Some((_, existing)) => {
+                if partition.mountpoint.len() < existing.mountpoint.len() {
+                    *existing = partition;
+                }
+            }
+            None => devices.push((key, partition)),
+        }
+    }
+
+    Ok(devices
+        .into_iter()
+        .map(|(_, partition)| format!("{} ({})", partition.mountpoint, partition.fstype))
+        .collect())
 }
 
 fn glob_matches(patterns: &str, value: &str) -> bool {
@@ -682,36 +738,54 @@ mod ip {
     use super::*;
 
     pub(super) fn addresses(options: &SupplementOptions) -> (String, String) {
-        let mut ipv4 = options.custom_ipv4.clone();
-        let mut ipv6 = options.custom_ipv6.clone();
+        let mut nic_ipv4 = String::new();
+        let mut nic_ipv6 = String::new();
 
         if options.get_ip_addr_from_nic
             && let Ok(interfaces) = if_addrs::get_if_addrs()
         {
             for interface in interfaces {
-                let name = &interface.name;
-                if !nic_selected(options, name) {
+                if !nic_selected(options, &interface.name) || !interface.is_oper_up() {
                     continue;
                 }
                 match interface.ip() {
                     std::net::IpAddr::V4(address) => {
-                        if ipv4.is_empty() && !address.is_loopback() {
-                            ipv4 = address.to_string();
+                        if nic_ipv4.is_empty() && !address.is_loopback() {
+                            nic_ipv4 = address.to_string();
                         }
                     }
                     std::net::IpAddr::V6(address) => {
-                        if ipv6.is_empty()
+                        if nic_ipv6.is_empty()
                             && !address.is_loopback()
                             && !address.is_unicast_link_local()
                         {
-                            ipv6 = address.to_string();
+                            nic_ipv6 = address.to_string();
                         }
                     }
                 }
             }
         }
 
-        (ipv4, ipv6)
+        select_addresses(
+            &options.custom_ipv4,
+            &options.custom_ipv6,
+            nic_ipv4,
+            nic_ipv6,
+        )
+    }
+
+    /// Go's priority: NIC addresses (when enabled and found) win over custom
+    /// values; the external lookup service is intentionally not called.
+    pub(super) fn select_addresses(
+        custom_ipv4: &str,
+        custom_ipv6: &str,
+        nic_ipv4: String,
+        nic_ipv6: String,
+    ) -> (String, String) {
+        if !nic_ipv4.is_empty() || !nic_ipv6.is_empty() {
+            return (nic_ipv4, nic_ipv6);
+        }
+        (custom_ipv4.to_owned(), custom_ipv6.to_owned())
     }
 }
 
@@ -768,6 +842,50 @@ mod tests {
             "fuseblk",
             "/dev/sdb1"
         )));
+    }
+
+    #[test]
+    fn nic_addresses_win_over_custom_values_like_go() {
+        assert_eq!(
+            ip::select_addresses("custom4", "custom6", "nic4".to_owned(), String::new()),
+            ("nic4".to_owned(), String::new())
+        );
+        assert_eq!(
+            ip::select_addresses("custom4", "custom6", String::new(), String::new()),
+            ("custom4".to_owned(), "custom6".to_owned())
+        );
+    }
+
+    #[test]
+    fn network_rate_uses_the_real_elapsed_window() {
+        let start = NetworkTotals { up: 100, down: 200 };
+        let end = NetworkTotals { up: 300, down: 600 };
+        let sample = network_sample(start, end, Duration::from_secs(2));
+        assert_eq!(sample.up, 100);
+        assert_eq!(sample.down, 200);
+        assert_eq!(sample.total_up, 300);
+        assert_eq!(sample.total_down, 600);
+    }
+
+    #[test]
+    fn monitoring_mountpoints_deduplicates_and_keeps_shortest() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("mounts"),
+            "/dev/sda1 / ext4 rw 0 0\n/dev/sda1 /data/sub ext4 rw 0 0\n/dev/sr0 /mnt/cdrom iso9660 ro 0 0\n",
+        )
+        .unwrap();
+
+        let mountpoints = monitoring_mountpoints(directory.path(), "").unwrap();
+        assert!(mountpoints.contains(&"/ (ext4)".to_owned()));
+        assert!(
+            !mountpoints
+                .iter()
+                .any(|mountpoint| mountpoint.contains("/data"))
+        );
+
+        let explicit = monitoring_mountpoints(directory.path(), "/;/data").unwrap();
+        assert_eq!(explicit, vec!["/".to_owned(), "/data".to_owned()]);
     }
 
     #[cfg(target_os = "linux")]
