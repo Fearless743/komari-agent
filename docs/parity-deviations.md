@@ -55,3 +55,21 @@
 （`true`/`1` 启用，其他值保持原值）。
 
 状态：**用户确认的有意差异**（A01 决策：保持 Rust 现状，只接受 `true`/`false`，不扩展解析器）。
+
+## D-004 v2 上报信封中的大整数不经过 float64 舍入
+
+- **Go**：`protocol/v2.BuildReportPayload` / `BuildReportRequest` 先把 v1 report 字节
+  `json.Unmarshal` 到 `interface{}`，所有数字都变成 `float64`，再 `json.Marshal`。因此超过
+  2^53 的整数会被舍入，例如 `"totalDown":9223372036854775807` 实际发出
+  `9223372036854776000`，`9007199254740993` 实际发出 `9007199254740992`。
+- **Rust**：`report_notification` / `report_request` 直接把 `ReportV1` 序列化到
+  `params.report`，整数保持精确。
+
+原因：Rust 的 serde 模型已经是强类型，没有再走 `interface{}` 的必要；保留精确值可以避免
+流量统计、uptime 等字段在 v1 与 v2 路径上出现不同的数值。
+
+影响：v2 路径上超过 2^53 的整数与 Go 发出的值不同。字段名、结构、JSON 整数类型不变，服务端
+`common.Report` 用 `int64` 解析两者都能成功；只有当服务端或第三方对 v2 上报值做逐字节比对时
+才会观察到差异。当前真实指标（内存、磁盘、月流量、uptime）远小于 2^53，功能性影响可忽略。
+
+状态：有意差异，实现更精确；待与 Go 对等验收确认是否要求逐字节复刻 Go 的舍入行为。
