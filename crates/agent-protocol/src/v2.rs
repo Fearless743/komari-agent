@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::v1::{BasicInfoV1, ReportV1};
 use crate::ProtocolError;
+use crate::v1::{BasicInfoV1, ReportV1};
 
 /// JSON-RPC version string used by both the agent and the panel.
 pub const JSONRPC_VERSION: &str = "2.0";

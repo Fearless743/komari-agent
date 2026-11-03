@@ -36,8 +36,7 @@ pub mod v1;
 pub mod v2;
 
 pub use compress::{
-    GZIP_DEFAULT_LEVEL, GZIP_OS_UNKNOWN, compress, compress_huffman_only, compress_with_level,
-    decompress,
+    GZIP_DEFAULT_LEVEL, GZIP_OS_UNKNOWN, compress, compress_with_level, decompress,
 };
 pub use error::ProtocolError;
 pub use v1::{
@@ -45,8 +44,8 @@ pub use v1::{
     GpuDeviceInfoV1, LoadReportV1, NetworkReportV1, RamReportV1, ReportV1,
 };
 pub use v2::{
-    ABORTED, AgentBasicInfoParams, AgentReportParams, ALREADY_EXISTS, CANCELLED, DATA_LOSS,
-    DEADLINE_EXCEEDED, INVALID_PARAMS, INVALID_REQUEST, INTERNAL_ERROR, JSONRPC_VERSION,
+    ABORTED, ALREADY_EXISTS, AgentBasicInfoParams, AgentReportParams, CANCELLED, DATA_LOSS,
+    DEADLINE_EXCEEDED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, JSONRPC_VERSION,
     METHOD_AGENT_BASIC_INFO, METHOD_AGENT_REPORT, METHOD_NOT_FOUND, NOT_FOUND, OUT_OF_RANGE,
     PARSE_ERROR, PERMISSION_DENIED, RPC_VERSION, RpcError, RpcRequest, RpcResponse,
     UNAUTHENTICATED, UNAVAILABLE, UNIMPLEMENTED, basic_info_notification, basic_info_params,
@@ -67,7 +66,7 @@ use serde::de::DeserializeOwned;
 ///
 /// let report = ReportV1::default();
 /// let json = encode_v1(&report).unwrap();
-/// assert!(json.starts_with(r#"{"cpu":{"usage":0},"#));
+/// assert!(json.starts_with(r#"{"cpu":{},"#));
 /// ```
 pub fn encode_v1<T: Serialize + ?Sized>(value: &T) -> Result<String, ProtocolError> {
     Ok(serde_json::to_string(value)?)

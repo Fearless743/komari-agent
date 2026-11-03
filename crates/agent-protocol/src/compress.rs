@@ -9,9 +9,9 @@
 use std::io::{Read, Write};
 
 use flate2::Compression;
+use flate2::GzBuilder;
 use flate2::read::MultiGzDecoder;
 use flate2::write::GzEncoder;
-use flate2::GzBuilder;
 
 use crate::ProtocolError;
 
@@ -32,7 +32,8 @@ pub fn compress(data: &[u8]) -> Result<Vec<u8>, ProtocolError> {
 /// Compress with an explicit level in `0..=9` (`0` = store, `9` = best).
 ///
 /// Go additionally supports `-1` (default) and `-2` (Huffman only); use
-/// [`compress`] for the default and [`compress_huffman_only`] for the latter.
+/// [`compress`] for the default. `flate2` has no Huffman-only mode, and the Go
+/// agent never requests it, so `-2` is intentionally not exposed.
 pub fn compress_with_level(data: &[u8], level: u32) -> Result<Vec<u8>, ProtocolError> {
     if level > 9 {
         return Err(ProtocolError::InvalidLevel(level));
@@ -44,19 +45,8 @@ pub fn compress_with_level(data: &[u8], level: u32) -> Result<Vec<u8>, ProtocolE
     finish(writer, data)
 }
 
-/// Compress with Go's `HuffmanOnly` mode (`gzip.HuffmanOnly`, level -2).
-pub fn compress_huffman_only(data: &[u8]) -> Result<Vec<u8>, ProtocolError> {
-    let writer = GzBuilder::new()
-        .mtime(0)
-        .operating_system(GZIP_OS_UNKNOWN)
-        .write(Vec::new(), Compression::new(1));
-    finish(writer, data)
-}
-
 fn finish(mut writer: GzEncoder<Vec<u8>>, data: &[u8]) -> Result<Vec<u8>, ProtocolError> {
-    writer
-        .write_all(data)
-        .map_err(ProtocolError::Compress)?;
+    writer.write_all(data).map_err(ProtocolError::Compress)?;
     writer.finish().map_err(ProtocolError::Compress)
 }
 
