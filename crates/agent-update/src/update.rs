@@ -8,9 +8,10 @@
 //! * download, validate size/optional SHA-256 and atomically replace the binary.
 //!
 //! The Go agent terminates with exit code 42 after installing an update so the
-//! service manager can restart it. This crate only returns
-//! [`UpdateOutcome::Updated`]; the CLI layer is responsible for exiting with
-//! [`RESTART_EXIT_CODE`] when appropriate.
+//! service manager can restart it. This crate does not terminate the host
+//! process: [`UpdateOutcome::exit_code`] maps an installed update to
+//! [`RESTART_EXIT_CODE`] (42), and [`Updater::run_periodic`] provides the
+//! periodic loop for the CLI to drive.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -273,7 +274,20 @@ impl Updater {
         }
 
         let current = self.current_version()?;
-        let latest = self.check_latest().await?;
+        let latest = match self.check_latest().await {
+            Ok(latest) => latest,
+            // Go's `UpdateCommand` treats "no release detected" (including a
+            // 404 or a release list without a matching asset) as up-to-date.
+            Err(UpdateError::NoRelease { .. })
+            | Err(UpdateError::NoAsset { .. })
+            | Err(UpdateError::HttpStatus { status: 404, .. }) => {
+                return Ok(UpdateOutcome::UpToDate {
+                    current: current.clone(),
+                    latest: current,
+                });
+            }
+            Err(error) => return Err(error),
+        };
 
         if !need_update(&current, &latest.version) {
             return Ok(UpdateOutcome::UpToDate {
@@ -357,7 +371,7 @@ impl Updater {
         mut should_stop: F,
     ) -> Result<Option<UpdateOutcome>, UpdateError>
     where
-        F: FnMut() -> bool,
+        F: FnMut() -> bool + Send,
     {
         let interval = if interval.is_zero() {
             CHECK_INTERVAL

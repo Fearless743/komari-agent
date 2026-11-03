@@ -559,3 +559,35 @@ async fn periodic_runner_honours_shutdown_before_checking() {
     assert!(outcome.is_none());
     assert!(http.requests().is_empty());
 }
+
+#[tokio::test]
+async fn no_release_or_matching_asset_is_up_to_date() {
+    let directory = tempfile::tempdir().unwrap();
+    let target = write_target(&directory);
+
+    let http = FakeHttp::new(vec![Reply::Response(200, releases_json(&[]))]);
+    let updater = Updater::new(options("1.0.0", Some(target.clone())), http).unwrap();
+    assert!(matches!(
+        updater.check_and_update().await.unwrap(),
+        UpdateOutcome::UpToDate { .. }
+    ));
+
+    let http = FakeHttp::new(vec![Reply::Response(
+        200,
+        release_json("2.0.0", &[("komari-agent-windows-amd64.exe", 10, None)]),
+    )]);
+    let updater = Updater::new(options("1.0.0", Some(target.clone())), http).unwrap();
+    assert!(matches!(
+        updater.check_and_update().await.unwrap(),
+        UpdateOutcome::UpToDate { .. }
+    ));
+
+    let http = FakeHttp::new(vec![Reply::Response(404, b"not found".to_vec())]);
+    let updater = Updater::new(options("1.0.0", Some(target.clone())), http).unwrap();
+    assert!(matches!(
+        updater.check_and_update().await.unwrap(),
+        UpdateOutcome::UpToDate { .. }
+    ));
+
+    assert_unchanged(&target);
+}
