@@ -161,3 +161,82 @@ workflow 只上传裸二进制 `komari-agent-{os}-{arch}[.exe]`，因此正常�
 解析成功；Go 会直接失败。需要严格对齐时设置 `ResolverConfig::system_fallback = false`。
 
 状态：任务要求的增强，不影响正常路径。
+
+## D-013 月流量采样点跟随上报周期
+
+- **Go**：`netstatic.StartOrContinue()` 启动后台 ticker，每 2 秒采样一次；增量先进入
+  内存 `staticCache`，每 `save_interval`（默认 600 秒）聚合成一条记录并落盘。
+- **Rust**：没有常驻线程；在每次 `collect_network()` / `collect_report_metrics()` 时
+  采样。增量先进入内存 cache，只有达到配置的 `save_interval`（默认 600 秒）才聚合为
+  一条记录并原子写盘；`Collector` 销毁时 flush 并保存。
+
+原因：本 crate 是库，不应在构造 `Collector` 时隐式启动后台线程；上报循环本身就是最
+自然的采样点。磁盘写入与记录数现在与上报频率解耦，不会再按 1 秒/条放大。
+
+影响：没有上报时不会持续采样，停止上报前的最后一个 `save_interval` 窗口依赖
+`Collector` 的 `Drop` 落盘；进程被强制杀死时最多丢失一个窗口的内存增量。需要秒级
+分辨率时可缩短 `save_interval` 或后续增加独立采样任务。
+
+状态：有意差异，待对等验收确认。
+
+## D-014 Linux 连接数失败时不回退 gopsutil 的 /proc 枚举
+
+- **Go**：优先直接读 `/proc/net/{tcp,tcp6,udp,udp6}`；失败时回退
+  `gopsutil net.Connections`。在 Linux 上该回退改用 per-pid fd/inode 枚举去重，但
+  `statsFromInodesWithContext` 仍读取 `<HostProc>/net/{tcp,tcp6,udp,udp6}`
+  （v4.26.x `net_linux.go`），**不是 netlink**，也不覆盖 `/proc/net` 完全不可读的
+  情况，并且需要读取 `/proc/<pid>/fd` 的权限。
+- **Rust**：只实现 `/proc/net` 快路径；失败时上报 0 并写入 `message`。
+- **非 Linux**：Go 的 `net.Connections` 有各平台实现；Rust 当前恒为 0（D-017）。
+
+原因：避免引入 inode/文件描述符级枚举与各平台 socket API 的大量代码；任务要求覆盖
+`/proc` fixture 与 `HOST_PROC`。
+
+影响：Go 的回退同样依赖 `/proc/net`，因此不能覆盖 `/proc/net` 完全不可读的场景；
+它额外处理 per-pid fd/inode 去重并需要 fd 权限。Rust 快路径失败时直接上报 0；
+macOS/FreeBSD/Windows 同样为 0（D-017）。
+
+状态：已知限制，待后续补齐。
+
+## D-015 空 GPU 详细结果省略 `gpu`
+
+- **Go**：详细探测成功但设备数为 0 时仍输出 `count:0`，并计算 `0/0 = NaN`，随后
+  `json.Marshal` 失败导致整包为空。
+- **Rust**：设备数为 0 时尝试 `models` 回退，仍为空则省略 `gpu`。
+
+原因：避免向协议层输出 NaN 或空报告。
+
+影响：无 GPU 的 `--enable-gpu` 部署不再出现 Go 的空包/NaN 路径；其它字段正常上报。
+
+状态：有意修复。
+
+## D-016 网络速率对计数器回绕钳零
+
+- **Go**：`NetworkSpeed` 用 `uint64` 直接相减，计数器回绕、网卡消失或驱动重置时会得到
+  接近 `2^64` 的巨大 `up`/`down`。
+- **Rust**：`saturating_sub` 将回绕/重置段视为 0。
+
+原因：任务明确要求重启/计数器回绕保护；巨大速率会污染面板图表与告警。
+
+影响：回绕瞬间 Go 可能上报异常峰值，Rust 上报 0；累计 `totalUp`/`totalDown` 仍取
+当前累计计数器，不受影响。该差异在 `net::tests::counter_wrap_and_interface_removal_clamp_to_zero`
+中固定。
+
+状态：有意修复。
+
+## D-017 非 Linux 平台采集为可编译降级
+
+- **Go**：Windows 通过 DXGI 枚举 GPU 名称；macOS/FreeBSD/Windows 均实现
+  `net.Connections`；进程数在 macOS/FreeBSD 用 `ps`，Windows 用
+  `K32EnumProcesses`。
+- **Rust**：Windows `gpu_name` 返回 `Unknown`；非 Linux 连接数恒为 0；非 Linux 进程数
+  使用 `sysinfo`；详细 GPU 探测仅 Linux。
+
+原因：本任务要求非 Linux 提供可编译降级，不要求平台原生对等；这些路径不影响 Linux
+主目标。
+
+影响：Windows 基础信息缺少真实 GPU 型号；非 Linux 面板连接数为 0；进程数口径与
+`ps` 行数/EnumProcesses 可能略有差异。后续平台任务可替换为 DXGI、平台 socket API
+与原生进程枚举。
+
+状态：已知限制，待平台任务补齐。
