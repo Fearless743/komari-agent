@@ -5,6 +5,10 @@
 //! download validation and atomic replacement without touching the network or
 //! the running test binary.
 //!
+//! [`Updater::run_periodic`] provides the 6-hour loop without terminating the
+//! host process; [`UpdateOutcome::exit_code`] maps a successful update to the
+//! Go-compatible exit code 42 for the caller.
+//!
 //! Typical wiring:
 //!
 //! ```no_run

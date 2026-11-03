@@ -92,3 +92,30 @@
 影响：若发布资产本身以 `<` 或 `{` 开头（正常 ELF/Mach-O/PE 不会），会被拒绝。大小和
 digest 校验失败时不会替换现有二进制，避免半安装状态。
 
+
+## D-008 Rust 不会降级，Go 使用 Equals 判断
+
+- **Go**：`CheckAndUpdate` 调用 `selfupdate.UpdateSelf` 后只用
+  `latest.Version.Equals(currentSemVer)` 判断是否已是最新；如果远端“最新”版本低于当前版本，
+  Go 仍可能下载并安装该版本。
+- **Rust**：`need_update` 使用 `Version::cmp_precedence` 判断 `latest > current`，同版本或更低
+  版本都返回 `UpdateOutcome::UpToDate`，不会降级。
+
+原因：防止误配的 tag、回滚发布或 API 返回旧数据导致在线降级。
+
+影响：需要主动回滚时不能依赖自动更新，必须手工安装目标版本。该差异为有意收紧。
+
+## D-009 更新资产选择改为规范名白名单
+
+- **Rust**：只接受精确的 `komari-agent-{os}-{arch}`（Unix）或
+  `komari-agent-{os}-{arch}.exe`（Windows）。`.deb`、`.rpm`、`.msi`、`.dmg`、`.pkg`、
+  `.apk`、`.AppImage`、`.sh`、`.run`、`.zst`、`.tar.gz`、`.zip` 等一律不选中。
+- **Go**：`go-github-selfupdate` 按 `{os}[-_]{arch}` 后缀匹配，接受
+  `.zip`/`.tar.gz`/`.tgz`/`.gzip`/`.gz`/`.tar.xz`/`.xz` 等压缩包，并会解压后替换；
+  Windows 也接受不带 `.exe` 的后缀。
+
+原因：A06 审核要求避免把安装包或压缩包误当作可执行文件替换；Komari 官方 Release
+workflow 只上传裸二进制 `komari-agent-{os}-{arch}[.exe]`，因此正常发布路径不受影响。
+
+影响：使用自建镜像发布压缩包或非规范文件名的部署无法自动更新，需要改为上传裸二进制
+或手工更新。状态：有意的安全收紧。
