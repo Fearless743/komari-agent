@@ -25,8 +25,14 @@ pub(crate) fn collect(options: &MonitorOptions, last: &Mutex<Option<ProcStat>>) 
     #[cfg(target_os = "linux")]
     {
         let mut last = last.lock();
-        if let Some(info) = sample_proc(options, &mut last) {
-            return info;
+        match sample_proc(options, &mut last) {
+            Ok(info) => return info,
+            Err(error) => {
+                platform::warn_proc_failure(options, "stat", &error);
+                if options.strict_proc {
+                    return CpuInfo::unknown(crate::os::arch());
+                }
+            }
         }
     }
 
@@ -37,17 +43,20 @@ pub(crate) fn collect(options: &MonitorOptions, last: &Mutex<Option<ProcStat>>) 
 }
 
 #[cfg(target_os = "linux")]
-fn sample_proc(options: &MonitorOptions, last: &mut Option<ProcStat>) -> Option<CpuInfo> {
+fn sample_proc(
+    options: &MonitorOptions,
+    last: &mut Option<ProcStat>,
+) -> Result<CpuInfo, crate::MonitorError> {
     let previous = match last.take() {
         Some(previous) => previous,
         None => {
-            let first = read_proc_stat(&options.proc_root).ok()?;
+            let first = read_proc_stat(&options.proc_root)?;
             std::thread::sleep(options.cpu_sample_interval);
             first
         }
     };
 
-    let current = read_proc_stat(&options.proc_root).ok()?;
+    let current = read_proc_stat(&options.proc_root)?;
     let usage = usage_between(&previous, &current);
 
     let (mut name, cpuinfo_physical_cores) = read_cpu_info(&options.proc_root)
@@ -74,7 +83,7 @@ fn sample_proc(options: &MonitorOptions, last: &mut Option<ProcStat>) -> Option<
 
     *last = Some(current);
 
-    Some(CpuInfo {
+    Ok(CpuInfo {
         name: name.unwrap_or_else(|| "Unknown".to_owned()),
         arch: crate::os::arch(),
         cores,

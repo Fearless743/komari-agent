@@ -60,11 +60,27 @@ pub(crate) fn kernel_version(options: &MonitorOptions) -> String {
 
     #[cfg(target_os = "linux")]
     {
-        if let Ok(value) = fs::read_to_string(options.proc_path("sys/kernel/osrelease")) {
-            let value = value.trim();
-            if !value.is_empty() {
-                return value.to_owned();
+        match fs::read_to_string(options.proc_path("sys/kernel/osrelease")) {
+            Ok(value) => {
+                let value = value.trim();
+                if !value.is_empty() {
+                    return value.to_owned();
+                }
             }
+            Err(error) => {
+                platform::warn_proc_failure(
+                    options,
+                    "sys/kernel/osrelease",
+                    &crate::error::MonitorError::io(
+                        options.proc_path("sys/kernel/osrelease"),
+                        error,
+                    ),
+                );
+            }
+        }
+
+        if options.strict_proc {
+            return "Unknown".to_owned();
         }
     }
 

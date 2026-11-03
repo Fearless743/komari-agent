@@ -16,9 +16,16 @@ pub(crate) fn collect(options: &MonitorOptions) -> u64 {
 
     #[cfg(target_os = "linux")]
     {
-        if let Ok(uptime) = read_uptime(&options.proc_root) {
-            return uptime;
+        match read_uptime(&options.proc_root) {
+            Ok(uptime) => return uptime,
+            Err(error) => {
+                platform::warn_proc_failure(options, "uptime", &error);
+            }
         }
+    }
+
+    if options.strict_proc {
+        return 0;
     }
 
     platform::fallback::uptime()

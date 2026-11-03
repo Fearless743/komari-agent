@@ -357,20 +357,40 @@ fn usage_between_clamps_and_matches_per_core() {
 }
 
 #[test]
-fn missing_proc_files_fall_back_gracefully() {
+fn strict_proc_returns_empty_instead_of_local_fallback() {
     let fixture = Fixture::empty();
-    let collector = fixture.collector();
+    assert!(
+        fixture.options().strict_proc,
+        "HOST_PROC enables strict mode"
+    );
+    let snapshot = fixture.collector().collect();
+
+    assert_eq!(snapshot.cpu.name, "Unknown");
+    assert_eq!(snapshot.cpu.cores, 1);
+    assert_eq!(snapshot.cpu.physical_cores, 0);
+    assert_eq!(snapshot.cpu.usage, 0.0);
+    assert_eq!(snapshot.memory.total, 0);
+    assert_eq!(snapshot.memory.used, 0);
+    assert_eq!(snapshot.swap, agent_monitor::SwapInfo::default());
+    assert_eq!(snapshot.load, agent_monitor::LoadAverage::default());
+    assert_eq!(snapshot.uptime, 0);
+    assert_eq!(snapshot.os.kernel_version, "Unknown");
+}
+
+#[test]
+fn non_strict_proc_falls_back_to_local_system() {
+    let fixture = Fixture::empty();
+    let collector = Collector::new(fixture.options().with_strict_proc(false));
     let snapshot = collector.collect();
 
     assert!(snapshot.cpu.cores > 0);
     assert!(!snapshot.cpu.name.is_empty());
-    assert!(snapshot.uptime < u64::MAX);
+    assert!(snapshot.uptime > 0);
     assert!(snapshot.load.load1.is_finite() && snapshot.load.load1 >= 0.0);
     assert!(!snapshot.os.name.is_empty());
     assert!(!snapshot.os.arch.is_empty());
-    // `sysinfo` still provides memory on the host even when the injected proc
-    // root is empty; it may legitimately be zero in very restricted sandboxes.
-    assert!(snapshot.memory.total < u64::MAX);
+    assert!(!snapshot.os.kernel_version.is_empty());
+    assert!(snapshot.memory.total > 0);
 }
 
 #[test]

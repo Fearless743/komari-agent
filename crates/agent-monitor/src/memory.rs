@@ -37,14 +37,27 @@ pub(crate) fn mode(options: &MonitorOptions) -> MemoryMode {
 pub(crate) fn collect(options: &MonitorOptions) -> MemoryInfo {
     #[cfg(target_os = "linux")]
     {
-        if let Ok(info) = read_meminfo(&options.proc_root)
-            && info.mem_total > 0
-        {
-            return from_meminfo(&info, mode(options));
+        match read_meminfo(&options.proc_root) {
+            Ok(info) if info.mem_total > 0 => return from_meminfo(&info, mode(options)),
+            Ok(_) => {}
+            Err(error) => {
+                platform::warn_proc_failure(options, "meminfo", &error);
+            }
         }
     }
 
+    if options.strict_proc {
+        return empty_memory(mode(options));
+    }
+
     platform::fallback::memory(mode(options))
+}
+
+fn empty_memory(mode: MemoryMode) -> MemoryInfo {
+    MemoryInfo {
+        mode,
+        ..Default::default()
+    }
 }
 
 /// Build a [`MemoryInfo`] from raw `/proc/meminfo` counters.
@@ -72,9 +85,16 @@ pub(crate) fn collect_swap(options: &MonitorOptions) -> SwapInfo {
 
     #[cfg(target_os = "linux")]
     {
-        if let Ok(info) = read_meminfo(&options.proc_root) {
-            return swap_from_meminfo(&info);
+        match read_meminfo(&options.proc_root) {
+            Ok(info) => return swap_from_meminfo(&info),
+            Err(error) => {
+                platform::warn_proc_failure(options, "meminfo", &error);
+            }
         }
+    }
+
+    if options.strict_proc {
+        return SwapInfo::default();
     }
 
     platform::fallback::swap()

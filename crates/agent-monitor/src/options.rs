@@ -39,6 +39,10 @@ pub struct MonitorOptions {
     /// Report the raw/htop-like used memory value, matching Go's
     /// `MemoryReportRawUsed`.
     pub memory_report_raw_used: bool,
+    /// When true, a failed proc read returns empty/unknown values instead of
+    /// falling back to the local `sysinfo` view. [`MonitorOptions::from_config`]
+    /// enables this automatically when `HOST_PROC` is configured.
+    pub strict_proc: bool,
     /// Interval between the two CPU samples when no previous sample is cached.
     /// The Go agent uses one second.
     pub cpu_sample_interval: Duration,
@@ -52,6 +56,7 @@ impl Default for MonitorOptions {
             root: PathBuf::from("/"),
             memory_include_cache: false,
             memory_report_raw_used: false,
+            strict_proc: false,
             cpu_sample_interval: Duration::from_secs(1),
         }
     }
@@ -76,6 +81,9 @@ impl MonitorOptions {
         let trimmed = host_proc.trim();
         if !trimmed.is_empty() {
             options.proc_root = PathBuf::from(trimmed);
+            // A configured host proc root is authoritative: do not silently
+            // substitute the container's own metrics when it is unreadable.
+            options.strict_proc = true;
         }
         options.memory_include_cache = memory_include_cache;
         options.memory_report_raw_used = memory_report_raw_used;
@@ -121,6 +129,12 @@ impl MonitorOptions {
     pub fn with_memory_modes(mut self, include_cache: bool, report_raw_used: bool) -> Self {
         self.memory_include_cache = include_cache;
         self.memory_report_raw_used = report_raw_used;
+        self
+    }
+
+    /// Override strict proc handling (empty values instead of local fallback).
+    pub fn with_strict_proc(mut self, strict: bool) -> Self {
+        self.strict_proc = strict;
         self
     }
 

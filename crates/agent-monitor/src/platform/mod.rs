@@ -5,4 +5,37 @@
 //! fallback compiled on Linux means its API usage is checked by the normal test
 //! suite.
 
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::error::MonitorError;
+use crate::options::MonitorOptions;
+
 pub(crate) mod fallback;
+
+/// Emit a single process-wide warning when proc metrics cannot be read.
+///
+/// In strict mode the collector returns empty values rather than substituting
+/// local system data, which keeps a broken `HOST_PROC` mount visible.
+pub(crate) fn warn_proc_failure(options: &MonitorOptions, metric: &str, error: &MonitorError) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    if options.strict_proc {
+        tracing::warn!(
+            proc_root = %options.proc_root.display(),
+            metric,
+            error = %error,
+            "failed to read proc metrics; strict proc mode returns empty values"
+        );
+    } else {
+        tracing::warn!(
+            proc_root = %options.proc_root.display(),
+            metric,
+            error = %error,
+            "failed to read proc metrics; falling back to local system data"
+        );
+    }
+}

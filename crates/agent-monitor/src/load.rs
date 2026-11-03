@@ -17,9 +17,16 @@ pub(crate) fn collect(options: &MonitorOptions) -> LoadAverage {
 
     #[cfg(target_os = "linux")]
     {
-        if let Ok(load) = read_loadavg(&options.proc_root) {
-            return load;
+        match read_loadavg(&options.proc_root) {
+            Ok(load) => return load,
+            Err(error) => {
+                platform::warn_proc_failure(options, "loadavg", &error);
+            }
         }
+    }
+
+    if options.strict_proc {
+        return LoadAverage::default();
     }
 
     platform::fallback::load()
