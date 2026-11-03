@@ -12,6 +12,9 @@ use crate::procfs::read_loadavg;
 /// Linux reads `/proc/loadavg`; other platforms, and failed proc reads, fall
 /// back to `sysinfo`. Unsupported platforms (notably Windows) report zeros.
 pub(crate) fn collect(options: &MonitorOptions) -> LoadAverage {
+    #[cfg(not(target_os = "linux"))]
+    let _ = options;
+
     #[cfg(target_os = "linux")]
     {
         if let Ok(load) = read_loadavg(&options.proc_root) {

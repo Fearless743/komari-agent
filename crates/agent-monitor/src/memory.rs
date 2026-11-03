@@ -67,6 +67,9 @@ pub(crate) fn from_meminfo(info: &ProcMemInfo, mode: MemoryMode) -> MemoryInfo {
 
 /// Collect swap information.
 pub(crate) fn collect_swap(options: &MonitorOptions) -> SwapInfo {
+    #[cfg(not(target_os = "linux"))]
+    let _ = options;
+
     #[cfg(target_os = "linux")]
     {
         if let Ok(info) = read_meminfo(&options.proc_root) {

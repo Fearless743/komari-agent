@@ -40,6 +40,9 @@ pub(crate) fn os_name() -> String {
 /// (`sys/kernel/osrelease`), so a mounted host proc reports the host kernel.
 /// `sysinfo` is used when the file is unavailable.
 pub(crate) fn kernel_version(options: &MonitorOptions) -> String {
+    #[cfg(not(target_os = "linux"))]
+    let _ = options;
+
     #[cfg(target_os = "linux")]
     {
         if let Ok(value) = fs::read_to_string(options.proc_path("sys/kernel/osrelease")) {

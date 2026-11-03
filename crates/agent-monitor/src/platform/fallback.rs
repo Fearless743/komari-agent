@@ -114,6 +114,7 @@ pub(crate) fn os_name() -> String {
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn os_name() -> String {
     System::long_os_version()
+        .ok()
         .or_else(|| System::name().ok())
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| std::env::consts::OS.to_owned())
