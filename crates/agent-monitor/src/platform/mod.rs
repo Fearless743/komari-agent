@@ -5,7 +5,6 @@
 //! fallback compiled on Linux means its API usage is checked by the normal test
 //! suite.
 
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::MonitorError;

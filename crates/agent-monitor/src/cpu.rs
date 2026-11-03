@@ -69,7 +69,8 @@ fn sample_proc(
 
     // gopsutil counts physical cores from sysfs topology first and only falls
     // back to /proc/cpuinfo when sysfs is unavailable.
-    let physical_cores = sysfs_physical_cores(&options.sys_root).unwrap_or(cpuinfo_physical_cores);
+    let physical_cores = sysfs_physical_cores(&options.sys_path("devices/system/cpu"))
+        .unwrap_or(cpuinfo_physical_cores);
 
     let cores = u32::try_from(current.cores.len())
         .ok()
@@ -104,8 +105,7 @@ fn read_cpu_info(proc_root: &std::path::Path) -> Option<String> {
 /// `cpuN`, then the deprecated `thread_siblings_list`, and counts unique
 /// sibling sets. Returns `None` when the topology files are unavailable.
 #[cfg(target_os = "linux")]
-fn sysfs_physical_cores(sys_root: &std::path::Path) -> Option<u32> {
-    let cpu_dir = sys_root.join("devices/system/cpu");
+fn sysfs_physical_cores(cpu_dir: &std::path::Path) -> Option<u32> {
     let entries = fs::read_dir(cpu_dir).ok()?;
     let cpu_dirs: Vec<_> = entries
         .flatten()

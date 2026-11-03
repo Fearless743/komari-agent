@@ -112,12 +112,12 @@ pub(crate) fn map_arch(arch: &str) -> String {
 /// `/system/build.prop`, then the presence of typical Android directories.
 #[cfg(target_os = "linux")]
 fn detect_android(options: &MonitorOptions) -> Option<String> {
-    if is_default_root(options) {
-        if let Some(version) = getprop("ro.build.version.release") {
-            let model = getprop("ro.product.model").unwrap_or_default();
-            let brand = getprop("ro.product.brand").unwrap_or_default();
-            return Some(format_android(&version, &model, &brand));
-        }
+    if is_default_root(options)
+        && let Some(version) = getprop("ro.build.version.release")
+    {
+        let model = getprop("ro.product.model").unwrap_or_default();
+        let brand = getprop("ro.product.brand").unwrap_or_default();
+        return Some(format_android(&version, &model, &brand));
     }
 
     if let Ok(content) = fs::read_to_string(options.root_path("system/build.prop"))
