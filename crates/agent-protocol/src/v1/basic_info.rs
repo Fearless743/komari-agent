@@ -9,7 +9,9 @@
 //!
 //! Both are modelled as `Option` so "missing" can be expressed exactly.
 //! Everything else mirrors the Go map, including empty strings such as
-//! `"ipv6": ""`, which the agent does send.
+//! `"ipv6": ""`, which the agent does send. Go's `encoding/json` also accepts
+//! JSON `null` for any field and leaves the zero value in place; non-`Option`
+//! fields use the shared `null_default` helper to reproduce that.
 
 use std::collections::BTreeMap;
 
@@ -22,36 +24,36 @@ use serde_json::Value;
 /// the Go map payload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BasicInfoV1 {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::v1::null_default::deserialize")]
     pub cpu_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::v1::null_default::deserialize")]
     pub cpu_cores: i64,
     /// Dropped for panels <= 1.2.0; `None` serialises as absent, like
     /// `delete(data, "cpu_physical_cores")` in Go.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_physical_cores: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::v1::null_default::deserialize")]
     pub arch: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::v1::null_default::deserialize")]
     pub os: String,
     /// Dropped for panels <= 1.0.2; `None` serialises as absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernel_version: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::v1::null_default::deserialize")]
     pub ipv4: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::v1::null_default::deserialize")]
     pub ipv6: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::v1::null_default::deserialize")]
     pub mem_total: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::v1::null_default::deserialize")]
     pub swap_total: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::v1::null_default::deserialize")]
     pub disk_total: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::v1::null_default::deserialize")]
     pub gpu_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::v1::null_default::deserialize")]
     pub virtualization: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::v1::null_default::deserialize")]
     pub version: String,
     /// Injected by the panel from the request token, never sent by the agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]

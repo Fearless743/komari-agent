@@ -321,6 +321,36 @@ fn basic_info_v1_can_drop_legacy_keys() {
 }
 
 #[test]
+fn basic_info_v1_treats_null_fields_as_zero() {
+    let golden = r#"{"cpu_name":null,"cpu_cores":null,"cpu_physical_cores":null,"arch":null,"os":null,"kernel_version":null,"ipv4":null,"ipv6":null,"mem_total":null,"swap_total":null,"disk_total":null,"gpu_name":null,"virtualization":null,"version":null,"uuid":null,"region":null}"#;
+    let info = decode_v1::<BasicInfoV1>(golden).expect("Go accepts null for every field");
+
+    assert_eq!(info.cpu_name, "");
+    assert_eq!(info.cpu_cores, 0);
+    assert_eq!(info.arch, "");
+    assert_eq!(info.os, "");
+    assert_eq!(info.ipv4, "");
+    assert_eq!(info.ipv6, "");
+    assert_eq!(info.mem_total, 0);
+    assert_eq!(info.swap_total, 0);
+    assert_eq!(info.disk_total, 0);
+    assert_eq!(info.gpu_name, "");
+    assert_eq!(info.virtualization, "");
+    assert_eq!(info.version, "");
+    assert_eq!(info.cpu_physical_cores, None);
+    assert_eq!(info.kernel_version, None);
+    assert_eq!(info.uuid, None);
+    assert_eq!(info.region, None);
+    assert!(info.extra.is_empty());
+
+    let encoded = info.to_json().unwrap();
+    assert!(encoded.contains(r#""cpu_name":"""#));
+    assert!(encoded.contains(r#""mem_total":0"#));
+    assert!(!encoded.contains("kernel_version"));
+    assert!(!encoded.contains("cpu_physical_cores"));
+}
+
+#[test]
 fn basic_info_v1_missing_fields_default_like_go() {
     let info = decode_v1::<BasicInfoV1>(r#"{"cpu_name":"Unknown"}"#).unwrap();
     assert_eq!(info.cpu_name, "Unknown");
