@@ -95,10 +95,6 @@ jobs:
             target: i686-unknown-freebsd
             asset: komari-agent-freebsd-386
             tool: zigbuild
-          - runner: ubuntu-latest
-            target: armv7-unknown-freebsd
-            asset: komari-agent-freebsd-arm
-            tool: zigbuild
 
     steps:
       - name: Checkout

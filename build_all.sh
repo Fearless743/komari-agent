@@ -40,7 +40,6 @@ TARGETS=(
     "freebsd amd64 x86_64-unknown-freebsd"
     "freebsd arm64 aarch64-unknown-freebsd"
     "freebsd 386 i686-unknown-freebsd"
-    "freebsd arm armv7-unknown-freebsd"
 )
 
 usage() {

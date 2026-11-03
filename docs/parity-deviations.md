@@ -315,3 +315,18 @@ systemd `Restart=on-failure` 不重启，因此改为 1。
 只返回 `u64`，没有携带 uptime 错误。
 影响：依赖 `message` 中 uptime 诊断的部署会少一行文本，其余上报字段不受影响；
 `HOST_PROC`（strict_proc）下 uptime 读取失败静默归零，不混入宿主机指标。
+
+## D-024 不提供 FreeBSD/arm 构建产物
+
+- **Go**：`build_all` 与 release 矩阵包含 `freebsd/arm`，产物为
+  `komari-agent-freebsd-arm`。
+- **Rust**：构建矩阵不包含 `freebsd/arm`。`armv7-unknown-freebsd` 是 tier 3
+  target，rustup 不提供预编译 std，`cargo build --target armv7-unknown-freebsd`
+  在标准工具链上无法直接完成。
+
+原因：不为单个 tier 3 目标引入 nightly `-Z build-std` 或自建 sysroot，避免发布
+流程依赖不稳定的工具链。
+
+影响：FreeBSD/arm 用户目前需要使用 Go 版，或在 FreeBSD/arm 主机上用
+`-Z build-std` 自行构建。`install.sh` 在 FreeBSD/arm 上会明确报错，不会下载
+不存在的资产；其余 FreeBSD 目标（amd64/arm64/386）不受影响。

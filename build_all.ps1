@@ -29,8 +29,7 @@ $Targets = @(
     @{ Goos = 'darwin'; Goarch = 'arm64'; Target = 'aarch64-apple-darwin' },
     @{ Goos = 'freebsd'; Goarch = 'amd64'; Target = 'x86_64-unknown-freebsd' },
     @{ Goos = 'freebsd'; Goarch = 'arm64'; Target = 'aarch64-unknown-freebsd' },
-    @{ Goos = 'freebsd'; Goarch = '386'; Target = 'i686-unknown-freebsd' },
-    @{ Goos = 'freebsd'; Goarch = 'arm'; Target = 'armv7-unknown-freebsd' }
+    @{ Goos = 'freebsd'; Goarch = '386'; Target = 'i686-unknown-freebsd' }
 )
 
 function Show-Usage {

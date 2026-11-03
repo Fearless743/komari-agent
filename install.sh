@@ -187,7 +187,7 @@ detect_arch() {
                 *) die "32-bit x86 architecture is not supported on $OS_NAME" ;;
             esac
             ;;
-        armv7* | armv6*)
+        arm | armv6* | armv7* | armv8l)
             case "$OS_NAME" in
                 freebsd | linux) ARCH="arm" ;;
                 *) die "32-bit ARM architecture is not supported on $OS_NAME" ;;
@@ -197,6 +197,12 @@ detect_arch() {
             die "Unsupported architecture: $machine on $OS_NAME"
             ;;
     esac
+
+    # armv7-unknown-freebsd is a tier 3 Rust target and rustup ships no std
+    # for it, so the release matrix does not publish a FreeBSD/arm binary.
+    if [ "$OS_NAME" = "freebsd" ] && [ "$ARCH" = "arm" ]; then
+        die "FreeBSD/arm binaries are not published (armv7-unknown-freebsd is a tier 3 target; see D-024)."
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1069,15 +1075,30 @@ resolve_download() {
     DOWNLOAD_URL="${base}/${download_path}/${file_name}"
 }
 
-download_agent() {
-    mkdir -p "$TARGET_DIR"
-    local tmp="${AGENT_PATH}.download.$$"
+ensure_target_dir() {
+    if [ -d "$TARGET_DIR" ]; then
+        local mode=""
+        mode=$(stat -c %a "$TARGET_DIR" 2>/dev/null || stat -f %Lp "$TARGET_DIR" 2>/dev/null || true)
+        if [ -n "$mode" ] && [ "$mode" != "700" ]; then
+            log_warning "Install directory $TARGET_DIR has mode $mode; 700 is recommended because auto-discovery.json contains a token."
+        fi
+        return 0
+    fi
 
+    log_step "Creating installation directory: $TARGET_DIR"
+    mkdir -p "$TARGET_DIR" || die "Failed to create $TARGET_DIR"
+    chmod 700 "$TARGET_DIR" || die "Failed to set permissions on $TARGET_DIR"
+}
+
+download_agent() {
     if [ "$DRY_RUN" = true ]; then
         log_info "[dry-run] would download $DOWNLOAD_URL"
         log_info "[dry-run] would install to $AGENT_PATH"
         return 0
     fi
+
+    ensure_target_dir
+    local tmp="${AGENT_PATH}.download.$$"
 
     log_step "Downloading $ASSET_NAME..."
     log_info "URL: $DOWNLOAD_URL"

@@ -410,8 +410,10 @@ komari-agent-linux-386       komari-agent-windows-386.exe
 komari-agent-linux-arm       komari-agent-darwin-amd64
 komari-agent-darwin-arm64    komari-agent-freebsd-amd64
 komari-agent-freebsd-arm64   komari-agent-freebsd-386
-komari-agent-freebsd-arm
 ```
+
+FreeBSD/arm 不发布：`armv7-unknown-freebsd` 是 tier 3 target，rustup 不提供
+预编译 std。该差异登记为 D-024；安装脚本在 FreeBSD/arm 上会给出明确错误。
 
 | 变量 | 作用 |
 | --- | --- |
@@ -437,7 +439,7 @@ komari-agent-freebsd-arm
 
 - [`.github/workflows/build.yml`](.github/workflows/build.yml)：main push / PR 上运行
   `cargo fmt --check`、`cargo clippy -D warnings`、`cargo test --workspace`，随后构建
-  13 个矩阵目标并上传 artifact。
+  12 个矩阵目标并上传 artifact。
 - [`.github/workflows/release.yml`](.github/workflows/release.yml)：release published 时
   重复测试与矩阵构建，以 `komari-agent-{os}-{arch}[.exe]` 上传到 Release，并构建推送
   GHCR 多架构镜像。
