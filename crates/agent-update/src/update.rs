@@ -91,6 +91,13 @@ pub struct LatestRelease {
     pub asset: Asset,
 }
 
+/// Action the caller should take after an update check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateAction {
+    Continue,
+    Restart,
+}
+
 /// Result of a check/update run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UpdateOutcome {
@@ -104,6 +111,28 @@ pub enum UpdateOutcome {
         latest: Version,
         target: PathBuf,
     },
+}
+
+impl UpdateOutcome {
+    /// Exit code the caller should use, or `None` when no restart is needed.
+    ///
+    /// Go calls `os.Exit(42)` directly; this mapping keeps the library from
+    /// terminating the host process while preserving the same exit code.
+    pub fn exit_code(&self) -> Option<i32> {
+        match self {
+            Self::Updated { .. } => Some(RESTART_EXIT_CODE),
+            Self::Disabled | Self::UpToDate { .. } => None,
+        }
+    }
+
+    /// Whether the caller should restart the agent.
+    pub fn action(&self) -> UpdateAction {
+        if self.exit_code().is_some() {
+            UpdateAction::Restart
+        } else {
+            UpdateAction::Continue
+        }
+    }
 }
 
 /// Release checker and updater.
@@ -313,6 +342,50 @@ impl Updater {
             latest: latest.version,
             target,
         })
+    }
+
+    /// Periodically check for updates without terminating the process.
+    ///
+    /// Returns `Some(outcome)` when an update was installed (the caller should
+    /// use [`UpdateOutcome::exit_code`] == 42 and restart) or when auto update
+    /// is disabled. Ordinary check errors are logged and retried after
+    /// `interval`, mirroring the Go loop. `should_stop` is polled before each
+    /// check.
+    pub async fn run_periodic<F>(
+        &self,
+        interval: Duration,
+        mut should_stop: F,
+    ) -> Result<Option<UpdateOutcome>, UpdateError>
+    where
+        F: FnMut() -> bool,
+    {
+        let interval = if interval.is_zero() {
+            CHECK_INTERVAL
+        } else {
+            interval
+        };
+
+        loop {
+            if should_stop() {
+                return Ok(None);
+            }
+
+            match self.check_and_update().await {
+                Ok(outcome) => {
+                    if matches!(
+                        outcome,
+                        UpdateOutcome::Updated { .. } | UpdateOutcome::Disabled
+                    ) {
+                        return Ok(Some(outcome));
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(%err, "update check failed");
+                }
+            }
+
+            tokio::time::sleep(interval).await;
+        }
     }
 }
 

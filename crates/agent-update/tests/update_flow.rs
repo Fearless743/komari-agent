@@ -7,10 +7,11 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use agent_update::{
-    HttpRequest, HttpResponse, Platform, UpdateError, UpdateHttp, UpdateOptions, UpdateOutcome,
-    Updater,
+    HttpRequest, HttpResponse, Platform, RESTART_EXIT_CODE, UpdateAction, UpdateError, UpdateHttp,
+    UpdateOptions, UpdateOutcome, Updater,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -492,4 +493,69 @@ async fn missing_target_is_rejected_after_version_check() {
         matches!(error, UpdateError::TargetNotConfigured),
         "{error:?}"
     );
+}
+
+#[test]
+fn updated_outcome_maps_to_restart_exit_code() {
+    let updated = UpdateOutcome::Updated {
+        previous: "1.0.0".parse().unwrap(),
+        latest: "2.0.0".parse().unwrap(),
+        target: PathBuf::from("/tmp/komari-agent"),
+    };
+    assert_eq!(updated.exit_code(), Some(RESTART_EXIT_CODE));
+    assert_eq!(updated.action(), UpdateAction::Restart);
+    assert_eq!(RESTART_EXIT_CODE, 42);
+
+    let up_to_date = UpdateOutcome::UpToDate {
+        current: "1.0.0".parse().unwrap(),
+        latest: "1.0.0".parse().unwrap(),
+    };
+    assert_eq!(up_to_date.exit_code(), None);
+    assert_eq!(up_to_date.action(), UpdateAction::Continue);
+}
+
+#[tokio::test]
+async fn periodic_runner_stops_after_installing_update() {
+    let directory = tempfile::tempdir().unwrap();
+    let target = write_target(&directory);
+    let body = b"\x7fELFnew-binary".to_vec();
+
+    let http = FakeHttp::new(vec![
+        Reply::Response(
+            200,
+            release_json("1.0.0", &[("komari-agent-linux-amd64", 10, None)]),
+        ),
+        Reply::Response(
+            200,
+            release_json(
+                "2.0.0",
+                &[("komari-agent-linux-amd64", body.len() as u64, None)],
+            ),
+        ),
+        Reply::Response(200, body),
+    ]);
+    let updater = Updater::new(options("1.0.0", Some(target.clone())), http.clone()).unwrap();
+
+    let outcome = updater
+        .run_periodic(Duration::from_millis(1), || false)
+        .await
+        .unwrap();
+
+    assert!(matches!(outcome, Some(UpdateOutcome::Updated { .. })));
+    assert_eq!(outcome.unwrap().exit_code(), Some(42));
+    assert_eq!(http.requests().len(), 3);
+}
+
+#[tokio::test]
+async fn periodic_runner_honours_shutdown_before_checking() {
+    let http = FakeHttp::new(Vec::new());
+    let updater = Updater::new(options("1.0.0", None), http.clone()).unwrap();
+
+    let outcome = updater
+        .run_periodic(Duration::from_millis(1), || true)
+        .await
+        .unwrap();
+
+    assert!(outcome.is_none());
+    assert!(http.requests().is_empty());
 }
