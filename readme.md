@@ -1,7 +1,12 @@
 # komari-agent
 
-Komari Agent 的 Rust 重写版本。目标是与 [`../komari-agent`](../komari-agent)（Go 实现）达到
-100% 功能对等；在完成对等验证之前，Go 版本保留作为回退实现。
+Komari Agent 的 Rust 重写版本。目标是与 Go 参考实现（本地目录
+[`../komari-agent`](../komari-agent)）达到 100% 功能对等；在完成对等验证之前，Go 版本保留
+作为回退实现。
+
+发布仓库、Release 资产与安装脚本统一使用
+`https://github.com/fearless743/komari-agent`。本文件原名 `README.md`，自 A07 起统一为
+`readme.md`；在大小写不敏感的文件系统上两者等价。
 
 当前已包含 workspace、CLI、配置加载、系统采集、协议 v1、DNS/自动发现、自动更新，以及完整的
 v1 WebSocket 上报链路。协议 v2 已按用户确认裁剪（后端无 `/api/clients/v2/rpc` 路由），
@@ -56,6 +61,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 --endpoint https://panel.
 默认安装到 `%ProgramFiles%\Komari`，通过 [nssm](https://nssm.cc) 注册为 Windows 服务
 （缺失时自动下载 nssm 2.24）。`config.json` 使用无 BOM UTF-8，并通过 `icacls` 限制为
 `SYSTEM` 与 `Administrators`；服务日志写入 `<安装目录>\komari-agent.log`（10 MiB 轮转）。
+两个脚本的 `--dry-run` 都会打印实际下载 URL；Windows 未指定版本时使用
+`releases/latest/download`，不会访问 GitHub API。
 
 ### Docker
 
@@ -96,12 +103,18 @@ sudo ./install.sh --endpoint https://panel.example.com --token TOKEN \
 
 安全与幂等行为：
 
-- token 只写入 `config.json`，不会出现在安装日志、unit/nssm 参数或 `ps` 中；
+- token 写入 `config.json`（`0600`），不会出现在安装日志、unit/nssm 参数或 `ps` 中；
+  自动发现生成的 `auto-discovery.json` 同样包含 token，因此安装目录使用 `0700`；
+- 服务以收紧的 umask 运行：systemd `UMask=0077`，OpenRC/procd/upstart/FreeBSD rc.d
+  `umask 077`，launchd `Umask=63`；Windows 安装目录和 `config.json` 通过 `icacls`
+  限制为 `SYSTEM` 与 `Administrators`；
 - 启动日志与 `--help` 输出中的 `token`、`cf_access_client_secret`、`auto_discovery_key`
   会被脱敏为 `******`；
-- 重复运行会停止旧服务、替换二进制，并保留配置文件中未被新参数覆盖的键；
+- 重复运行会停止旧服务、替换二进制，并用 `jq`/`python3` 合并配置，保留未被新参数覆盖的键；
+  两者都不存在时会重写配置并告警未知键可能丢失；
+- 配置先写入同目录 `0600` 临时文件，JSON 校验通过后才原子替换；失败时保留原文件；
 - 下载失败不会删除旧二进制（先下载到临时文件，成功后才替换）；
-- 可用 `--dry-run` 预演参数解析、下载 URL 和服务路径。
+- 可用 `--dry-run` 预演参数解析、下载 URL 和服务路径，不会创建安装目录。
 
 ## 配置
 
@@ -229,20 +242,20 @@ journalctl -u komari-agent -n 100 --no-pager
 直接编辑 `config.json` 后重启，或使用环境变量覆盖（环境变量优先级高于 JSON）：
 
 ```bash
-sudo install -m 600 /dev/null /etc/komari/agent.env
-echo 'AGENT_TOKEN=new-token' | sudo tee /etc/komari/agent.env >/dev/null
+sudo install -m 600 /dev/null /opt/komari/agent.env
+echo 'AGENT_TOKEN=new-token' | sudo tee /opt/komari/agent.env >/dev/null
 sudo systemctl edit komari-agent
 ```
 
-在 drop-in 中加入：
+在 drop-in 中加入（开头的 `-` 表示文件不存在时不阻止服务启动）：
 
 ```ini
 [Service]
-EnvironmentFile=/etc/komari/agent.env
+EnvironmentFile=-/opt/komari/agent.env
 ```
 
-然后 `sudo systemctl restart komari-agent`。不要把 token 写进 `ExecStart`，否则会出现在
-`ps` 与服务定义中。
+然后 `sudo systemctl restart komari-agent`。如果自定义了 `--install-dir`，请把
+`/opt/komari` 换成实际目录。不要把 token 写进 `ExecStart`，否则会出现在 `ps` 与服务定义中。
 
 ### 其他 init 系统
 
@@ -258,13 +271,14 @@ EnvironmentFile=/etc/komari/agent.env
 
 ## Docker 部署
 
-镜像以 UID/GID `10001` 非 root 运行，`/etc/komari` 为配置卷，`/var/lib/komari` 为数据卷。
-`/app` 归运行用户所有，用于自动发现文件和自更新。
+镜像以 UID/GID `10001` 非 root 运行，`/etc/komari` 为配置卷；`/app` 归运行用户所有，
+用于自动发现文件和自更新。agent 当前唯一的运行期状态是
+`/app/auto-discovery.json`（与可执行文件同目录），它不在数据卷中，容器重建后会丢失。
 
 ### 使用配置文件
 
 ```bash
-mkdir -p komari/config komari/data
+mkdir -p komari/config
 cat > komari/config/config.json <<'JSON'
 {
   "endpoint": "https://panel.example.com",
@@ -272,12 +286,12 @@ cat > komari/config/config.json <<'JSON'
   "interval": 1.0
 }
 JSON
-sudo chown -R 10001:10001 komari/config komari/data
+sudo chown -R 10001:10001 komari/config
+sudo chmod 700 komari/config
 sudo chmod 600 komari/config/config.json
 
 docker run -d --name komari-agent --restart unless-stopped \
   -v "$PWD/komari/config:/etc/komari:ro" \
-  -v "$PWD/komari/data:/var/lib/komari" \
   ghcr.io/fearless743/komari-agent:latest \
   --config /etc/komari/config.json
 ```
@@ -292,10 +306,6 @@ services:
     command: ["--config", "/etc/komari/config.json"]
     volumes:
       - ./komari/config:/etc/komari:ro
-      - komari-data:/var/lib/komari
-
-volumes:
-  komari-data:
 ```
 
 ### 仅使用环境变量
@@ -314,8 +324,10 @@ token 只在环境变量中，不会出现在容器命令行。也可以把 `AGE
 
 ### 说明
 
-- 自动发现文件 `auto-discovery.json` 固定写在可执行文件同目录（镜像内为 `/app`）。
-  容器重建后该文件不会保留；长期部署建议显式配置 token，或确保自动发现注册可重复执行。
+- 自动发现文件 `auto-discovery.json` 固定写在可执行文件同目录（镜像内为
+  `/app/auto-discovery.json`），其中包含 token。容器重建后该文件不会保留；长期部署建议
+  显式配置 token，或确保自动发现注册可重复执行。不要为了持久化而挂载 `/app`，否则会
+  覆盖镜像内的二进制。
 - 自更新需要可写 `/app`。若以只读根文件系统运行，请设置 `disable_auto_update` 并自行管理镜像升级。
 - 镜像内不包含默认配置；未挂载配置且未提供 `AGENT_*` 时，agent 会以“缺少凭据”退出。
 
@@ -445,6 +457,12 @@ FreeBSD/arm 不发布：`armv7-unknown-freebsd` 是 tier 3 target，rustup 不�
   GHCR 多架构镜像。
 - Linux/FreeBSD 目标在 ubuntu runner 上使用 `cargo zigbuild`；Windows/macOS 目标使用
   原生 runner。
+- 两个 workflow 的 lint 任务会运行 `bash -n`、ShellCheck、`actionlint`、PowerShell AST
+  解析、服务定义渲染测试，以及非 root 的 `install.sh --dry-run`（校验不泄露 token、不创建
+  安装目录）。
+
+CI 不覆盖需要目标系统或守护进程的环境：systemd/OpenRC/procd/launchd/upstart/FreeBSD rc.d
+的实际启停、Windows nssm 服务、Docker 镜像构建都应在对应平台做一次发布前冒烟测试。
 
 Docker 构建可注入版本：
 
