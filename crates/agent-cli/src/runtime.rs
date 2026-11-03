@@ -9,9 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_client::{
-    AgentClient, BasicInfoUploader, ClientOptions, Clock, MonitorReportProvider, ReportProvider,
-    SupplementOptions, SystemSupplement, TokioClock, TungsteniteTransport, WsClientConfig,
-    WsTransport,
+    AgentClient, BasicInfoUploader, ClientOptions, Clock, IpOptions, MonitorReportProvider,
+    ReportProvider, TokioClock, TungsteniteTransport, WsClientConfig, WsTransport,
 };
 use agent_config::Config;
 use agent_discovery::{
@@ -89,10 +88,9 @@ impl RuntimeDeps {
         let ws: Arc<dyn WsTransport> = Arc::new(TungsteniteTransport::new(ws_config));
 
         let monitor = monitor_options(config);
-        let supplement = SystemSupplement::new(supplement_options(config, &monitor));
         let provider: Arc<dyn ReportProvider> = Arc::new(MonitorReportProvider::new(
             Arc::new(Collector::new(monitor)),
-            supplement,
+            ip_options(config),
             Duration::from_secs(1),
             VERSION,
         ));
@@ -259,27 +257,33 @@ pub fn client_options(config: &Config) -> ClientOptions {
     }
 }
 
-/// Map configuration to monitor options, including `HOST_PROC`/`HOST_SYS` and
-/// the memory accounting flags.
+/// Map configuration to monitor options, including `HOST_PROC`/`HOST_SYS`,
+/// memory accounting, disk/network filters, GPU probing and `month_rotate`.
 pub fn monitor_options(config: &Config) -> MonitorOptions {
-    let mut options = MonitorOptions::from_env_lookup(&|key| std::env::var(key).ok());
-    if !config.host_proc.trim().is_empty() {
-        options = options.with_proc_root(config.host_proc.trim());
-    }
-    options.memory_include_cache = config.memory_include_cache;
-    options.memory_report_raw_used = config.memory_report_raw_used;
+    let mut options = MonitorOptions::from_monitor_config(
+        &config.host_proc,
+        config.memory_include_cache,
+        config.memory_report_raw_used,
+        &config.include_mountpoints,
+        &config.include_nics,
+        &config.exclude_nics,
+        config.month_rotate,
+        config.enable_gpu,
+    );
+
+    // `from_monitor_config` covers HOST_PROC; overlay the remaining env-driven
+    // paths exactly like `MonitorOptions::from_env_lookup`.
+    let env = MonitorOptions::from_env_lookup(&|key| std::env::var(key).ok());
+    options.sys_root = env.sys_root;
+    options.process_path = env.process_path;
     options
 }
 
-/// Map configuration to supplemental metrics options.
-pub fn supplement_options(config: &Config, monitor: &MonitorOptions) -> SupplementOptions {
-    SupplementOptions {
-        proc_root: monitor.proc_root.clone(),
-        sys_root: monitor.sys_root.clone(),
+/// Map configuration to the IP-only collector options.
+pub fn ip_options(config: &Config) -> IpOptions {
+    IpOptions {
         include_nics: config.include_nics.clone(),
         exclude_nics: config.exclude_nics.clone(),
-        include_mountpoints: config.include_mountpoints.clone(),
-        enable_gpu: config.enable_gpu,
         custom_ipv4: config.custom_ipv4.clone(),
         custom_ipv6: config.custom_ipv6.clone(),
         get_ip_addr_from_nic: config.get_ip_addr_from_nic,
@@ -328,17 +332,24 @@ mod tests {
     }
 
     #[test]
-    fn supplement_options_carry_filters_and_gpu_flag() {
+    fn monitor_and_ip_options_carry_filters() {
         let mut config = config();
         config.include_nics = "eth*".to_owned();
         config.exclude_nics = "lo".to_owned();
         config.enable_gpu = true;
-        let monitor = MonitorOptions::default();
-        let supplement = supplement_options(&config, &monitor);
+        config.month_rotate = 7;
+        config.include_mountpoints = "/;/data".to_owned();
 
-        assert_eq!(supplement.include_nics, "eth*");
-        assert_eq!(supplement.exclude_nics, "lo");
-        assert!(supplement.enable_gpu);
+        let monitor = monitor_options(&config);
+        assert_eq!(monitor.include_nics, "eth*");
+        assert_eq!(monitor.exclude_nics, "lo");
+        assert!(monitor.enable_gpu);
+        assert_eq!(monitor.month_rotate, 7);
+        assert_eq!(monitor.include_mountpoints, "/;/data");
+
+        let ip = ip_options(&config);
+        assert_eq!(ip.include_nics, "eth*");
+        assert_eq!(ip.exclude_nics, "lo");
     }
 
     #[tokio::test]

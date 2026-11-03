@@ -13,14 +13,12 @@ use agent_protocol::BasicInfoV1;
 use thiserror::Error;
 
 use crate::endpoint::build_basic_info_endpoint;
-use crate::supplement::BasicSupplement;
 
 /// Build the v1 basic information object.
-pub fn build_basic_info(
-    info: &BasicInfo,
-    supplement: &BasicSupplement,
-    version: &str,
-) -> BasicInfoV1 {
+///
+/// `disk_total` and `gpu_name` come from A03's [`BasicInfo`]; only the IP
+/// addresses are supplied by the A05 IP-only module.
+pub fn build_basic_info(info: &BasicInfo, ipv4: &str, ipv6: &str, version: &str) -> BasicInfoV1 {
     BasicInfoV1 {
         cpu_name: info.cpu_name.clone(),
         cpu_cores: i64::from(info.cpu_cores),
@@ -28,12 +26,12 @@ pub fn build_basic_info(
         arch: info.arch.clone(),
         os: info.os.clone(),
         kernel_version: Some(info.kernel_version.clone()),
-        ipv4: supplement.ipv4.clone(),
-        ipv6: supplement.ipv6.clone(),
+        ipv4: ipv4.to_owned(),
+        ipv6: ipv6.to_owned(),
         mem_total: info.mem_total,
         swap_total: info.swap_total,
-        disk_total: supplement.disk_total,
-        gpu_name: supplement.gpu_name.clone(),
+        disk_total: info.disk_total,
+        gpu_name: info.gpu_name.clone(),
         virtualization: info.virtualization.clone(),
         version: version.to_owned(),
         ..BasicInfoV1::default()
@@ -314,16 +312,12 @@ mod tests {
             kernel_version: "6.6".to_owned(),
             mem_total: 1024,
             swap_total: 2048,
-            virtualization: "none".to_owned(),
-        };
-        let supplement = BasicSupplement {
             disk_total: 4096,
             gpu_name: "None".to_owned(),
-            ipv4: "192.0.2.2".to_owned(),
-            ipv6: String::new(),
+            virtualization: "none".to_owned(),
         };
 
-        let basic = build_basic_info(&info, &supplement, "1.0.0");
+        let basic = build_basic_info(&info, "192.0.2.2", "", "1.0.0");
         assert_eq!(basic.cpu_cores, 8);
         assert_eq!(basic.cpu_physical_cores, Some(4));
         assert_eq!(basic.mem_total, 1024);

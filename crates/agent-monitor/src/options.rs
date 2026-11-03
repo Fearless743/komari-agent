@@ -61,6 +61,35 @@ pub struct MonitorOptions {
     /// Interval between the two CPU samples when no previous sample is cached.
     /// The Go agent uses one second.
     pub cpu_sample_interval: Duration,
+    /// Semicolon separated mount points to include in disk usage. Empty means
+    /// "detect every physical filesystem", matching Go's `include_mountpoints`.
+    pub include_mountpoints: String,
+    /// Comma separated interface patterns to include. Supports Go `filepath.Match`
+    /// style wildcards (`*`, `?`, `[...]`).
+    pub include_nics: String,
+    /// Comma separated interface patterns to exclude.
+    pub exclude_nics: String,
+    /// Day of month (1-31) on which monthly traffic accounting resets. `0`
+    /// disables the monthly database and reports lifetime counters.
+    pub month_rotate: i64,
+    /// Enable detailed GPU probing (`--enable-gpu`). Basic GPU name detection
+    /// used by the basic-info payload is independent of this switch.
+    pub enable_gpu: bool,
+    /// Window between the two network counter samples used to compute the
+    /// current transfer rate. The Go agent uses one second.
+    pub network_sample_interval: Duration,
+    /// Location of the persistent monthly traffic database
+    /// (`net_static.json` in the Go agent's working directory).
+    pub net_static_path: PathBuf,
+    /// Path of `nvidia-smi`; when missing, `nvidia-smi` is looked up on
+    /// [`MonitorOptions::gpu_tool_path`].
+    pub nvidia_smi_path: PathBuf,
+    /// Path of `rocm-smi`; when missing, it is looked up on
+    /// [`MonitorOptions::gpu_tool_path`].
+    pub rocm_smi_path: PathBuf,
+    /// `PATH` used to locate GPU tools (`nvidia-smi`, `rocm-smi`, `lspci`).
+    /// `None` inherits the process `PATH`.
+    pub gpu_tool_path: Option<OsString>,
 }
 
 impl Default for MonitorOptions {
@@ -74,6 +103,16 @@ impl Default for MonitorOptions {
             memory_report_raw_used: false,
             strict_proc: false,
             cpu_sample_interval: Duration::from_secs(1),
+            include_mountpoints: String::new(),
+            include_nics: String::new(),
+            exclude_nics: String::new(),
+            month_rotate: 0,
+            enable_gpu: false,
+            network_sample_interval: Duration::from_secs(1),
+            net_static_path: PathBuf::from("./net_static.json"),
+            nvidia_smi_path: PathBuf::from("/usr/bin/nvidia-smi"),
+            rocm_smi_path: PathBuf::from("/opt/rocm/bin/rocm-smi"),
+            gpu_tool_path: None,
         }
     }
 }
@@ -103,6 +142,33 @@ impl MonitorOptions {
         }
         options.memory_include_cache = memory_include_cache;
         options.memory_report_raw_used = memory_report_raw_used;
+        options
+    }
+
+    /// Build options from the full set of values resolved by the configuration
+    /// layer.
+    ///
+    /// This is the A05-friendly constructor: it keeps [`MonitorOptions::from_config`]
+    /// behaviour for `host_proc` and memory modes, and additionally wires the
+    /// disk/network/GPU switches that mirror the Go agent's flags.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_monitor_config(
+        host_proc: &str,
+        memory_include_cache: bool,
+        memory_report_raw_used: bool,
+        include_mountpoints: &str,
+        include_nics: &str,
+        exclude_nics: &str,
+        month_rotate: i64,
+        enable_gpu: bool,
+    ) -> Self {
+        let mut options =
+            Self::from_config(host_proc, memory_include_cache, memory_report_raw_used);
+        options.include_mountpoints = include_mountpoints.to_owned();
+        options.include_nics = include_nics.to_owned();
+        options.exclude_nics = exclude_nics.to_owned();
+        options.month_rotate = month_rotate;
+        options.enable_gpu = enable_gpu;
         options
     }
 
@@ -175,6 +241,52 @@ impl MonitorOptions {
     /// Override the CPU sampling interval.
     pub fn with_cpu_sample_interval(mut self, interval: Duration) -> Self {
         self.cpu_sample_interval = interval;
+        self
+    }
+
+    /// Override the disk/network filters and the monthly reset day.
+    pub fn with_filters(
+        mut self,
+        include_mountpoints: impl Into<String>,
+        include_nics: impl Into<String>,
+        exclude_nics: impl Into<String>,
+        month_rotate: i64,
+    ) -> Self {
+        self.include_mountpoints = include_mountpoints.into();
+        self.include_nics = include_nics.into();
+        self.exclude_nics = exclude_nics.into();
+        self.month_rotate = month_rotate;
+        self
+    }
+
+    /// Enable or disable detailed GPU probing.
+    pub fn with_gpu_enabled(mut self, enabled: bool) -> Self {
+        self.enable_gpu = enabled;
+        self
+    }
+
+    /// Override the network sampling window.
+    pub fn with_network_sample_interval(mut self, interval: Duration) -> Self {
+        self.network_sample_interval = interval;
+        self
+    }
+
+    /// Override the monthly traffic database path.
+    pub fn with_net_static_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.net_static_path = path.into();
+        self
+    }
+
+    /// Override the GPU tool paths and the `PATH` used to look them up.
+    pub fn with_gpu_tools(
+        mut self,
+        nvidia_smi: impl Into<PathBuf>,
+        rocm_smi: impl Into<PathBuf>,
+        gpu_tool_path: Option<OsString>,
+    ) -> Self {
+        self.nvidia_smi_path = nvidia_smi.into();
+        self.rocm_smi_path = rocm_smi.into();
+        self.gpu_tool_path = gpu_tool_path;
         self
     }
 

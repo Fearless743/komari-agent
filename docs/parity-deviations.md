@@ -162,6 +162,84 @@ workflow 只上传裸二进制 `komari-agent-{os}-{arch}[.exe]`，因此正常�
 
 状态：任务要求的增强，不影响正常路径。
 
+## D-013 月流量采样点跟随上报周期
+
+- **Go**：`netstatic.StartOrContinue()` 启动后台 ticker，每 2 秒采样一次；增量先进入
+  内存 `staticCache`，每 `save_interval`（默认 600 秒）聚合成一条记录并落盘。
+- **Rust**：没有常驻线程；在每次 `collect_network()` / `collect_report_metrics()` 时
+  采样。增量先进入内存 cache，只有达到配置的 `save_interval`（默认 600 秒）才聚合为
+  一条记录并原子写盘；`Collector` 销毁时 flush 并保存。
+
+原因：本 crate 是库，不应在构造 `Collector` 时隐式启动后台线程；上报循环本身就是最
+自然的采样点。磁盘写入与记录数现在与上报频率解耦，不会再按 1 秒/条放大。
+
+影响：没有上报时不会持续采样，停止上报前的最后一个 `save_interval` 窗口依赖
+`Collector` 的 `Drop` 落盘；进程被强制杀死时最多丢失一个窗口的内存增量。需要秒级
+分辨率时可缩短 `save_interval` 或后续增加独立采样任务。
+
+状态：有意差异，待对等验收确认。
+
+## D-014 Linux 连接数失败时不回退 gopsutil 的 /proc 枚举
+
+- **Go**：优先直接读 `/proc/net/{tcp,tcp6,udp,udp6}`；失败时回退
+  `gopsutil net.Connections`。在 Linux 上该回退改用 per-pid fd/inode 枚举去重，但
+  `statsFromInodesWithContext` 仍读取 `<HostProc>/net/{tcp,tcp6,udp,udp6}`
+  （v4.26.x `net_linux.go`），**不是 netlink**，也不覆盖 `/proc/net` 完全不可读的
+  情况，并且需要读取 `/proc/<pid>/fd` 的权限。
+- **Rust**：只实现 `/proc/net` 快路径；失败时上报 0 并写入 `message`。
+- **非 Linux**：Go 的 `net.Connections` 有各平台实现；Rust 当前恒为 0（D-017）。
+
+原因：避免引入 inode/文件描述符级枚举与各平台 socket API 的大量代码；任务要求覆盖
+`/proc` fixture 与 `HOST_PROC`。
+
+影响：Go 的回退同样依赖 `/proc/net`，因此不能覆盖 `/proc/net` 完全不可读的场景；
+它额外处理 per-pid fd/inode 去重并需要 fd 权限。Rust 快路径失败时直接上报 0；
+macOS/FreeBSD/Windows 同样为 0（D-017）。
+
+状态：已知限制，待后续补齐。
+
+## D-015 空 GPU 详细结果省略 `gpu`
+
+- **Go**：详细探测成功但设备数为 0 时仍输出 `count:0`，并计算 `0/0 = NaN`，随后
+  `json.Marshal` 失败导致整包为空。
+- **Rust**：设备数为 0 时尝试 `models` 回退，仍为空则省略 `gpu`。
+
+原因：避免向协议层输出 NaN 或空报告。
+
+影响：无 GPU 的 `--enable-gpu` 部署不再出现 Go 的空包/NaN 路径；其它字段正常上报。
+
+状态：有意修复。
+
+## D-016 网络速率对计数器回绕钳零
+
+- **Go**：`NetworkSpeed` 用 `uint64` 直接相减，计数器回绕、网卡消失或驱动重置时会得到
+  接近 `2^64` 的巨大 `up`/`down`。
+- **Rust**：`saturating_sub` 将回绕/重置段视为 0。
+
+原因：任务明确要求重启/计数器回绕保护；巨大速率会污染面板图表与告警。
+
+影响：回绕瞬间 Go 可能上报异常峰值，Rust 上报 0；累计 `totalUp`/`totalDown` 仍取
+当前累计计数器，不受影响。该差异在 `net::tests::counter_wrap_and_interface_removal_clamp_to_zero`
+中固定。
+
+状态：有意修复。
+
+## D-017 非 Linux 平台采集为可编译降级
+
+- **Go**：Windows 通过 DXGI 枚举 GPU 名称；macOS/FreeBSD/Windows 均实现
+  `net.Connections`；进程数在 macOS/FreeBSD 用 `ps`，Windows 用
+  `K32EnumProcesses`。
+- **Rust**：Windows `gpu_name` 返回 `Unknown`；非 Linux 连接数恒为 0；非 Linux 进程数
+  使用 `sysinfo`；详细 GPU 探测仅 Linux。
+
+原因：本任务要求非 Linux 提供可编译降级，不要求平台原生对等；这些路径不影响 Linux
+主目标。
+
+影响：Windows 基础信息缺少真实 GPU 型号；非 Linux 面板连接数为 0；进程数口径与
+`ps` 行数/EnumProcesses 可能略有差异。后续平台任务可替换为 DXGI、平台 socket API
+与原生进程枚举。
+
+状态：已知限制，待平台任务补齐。
 ## D-018 重试耗尽后 CLI 以非零码退出
 
 - **Go**：`EstablishWebSocketConnection` 在 v1 下耗尽 `max_retries` 后返回，root 命令的
@@ -173,24 +251,20 @@ systemd `Restart=on-failure` 不重启，因此改为 1。
 影响：`Restart=always` 与 `Restart=on-failure` 均可恢复；若部署依赖进程内部无限重连，
 请把 `max_retries` 设为较大的值。服务管理器可配置 `Restart=on-failure` 或 `always`。
 
-## D-019 磁盘/网络/GPU/连接/进程采集暂由 `agent-client` 提供（待 A03 收敛）
+## D-019 指标采集已收敛到 A03，A05 仅保留 IP-only 模块
 
-- **Go**：全部由 `monitoring`（gopsutil + `lspci`/`nvidia-smi`/`rocm-smi`）采集。
-- **Rust（A05）**：`agent-monitor` 尚未包含 A03 的磁盘/网络/GPU/连接/进程采集，因此
-  `agent-client::supplement` 直接读取 Linux `/proc`、`/sys`，并调用 `lspci`/`nvidia-smi`。
+- **Go**：`monitoring` 统一提供 CPU/内存/磁盘/网络/连接/进程/GPU，IP 由
+  `monitoring.GetIPAddress` 采集。
+- **Rust**：A03 的 `agent_monitor::Collector` 已提供
+  `collect_report_metrics()`（含 disk/network/connections/process/GPU/message）和
+  `collect_basic_info()`（含 `disk_total`/`gpu_name`）。A05 已删除自己重复的
+  磁盘/网络/GPU/连接/进程采集，`MonitorReportProvider` 直接调用 A03：
+  - CPU 仍用 `sample_cpu(1s)` 固定窗口，并覆盖报告中的 CPU 值；
+  - `month_rotate` 通过 `MonitorOptions::from_monitor_config` 传入 netstatic；
+  - `ReportSample::from_metrics` 显式逐字段构造，A03 新增字段不会被静默丢弃。
+  A03 不提供 IP，因此 `agent-client::ip` 仅保留 IP 采集；其外部服务差异见 D-020。
 
-原因：A05 需要按 Go 形状上报完整 v1 payload，不能等待 A03 合并。
-影响：非 Linux 平台这些字段为零/缺失；GPU 详细探测只覆盖 NVIDIA。
-
-收敛计划（A03 合并后执行）：
-
-1. rebase 到 A03 合并后的 main；
-2. 删除 `agent-client/src/supplement.rs`，`MonitorReportProvider` 改为直接从
-   `agent_monitor::Collector` 取磁盘/网络/GPU/连接/进程/IP；
-3. `ReportSample::from_metrics` 去掉 `..Self::default()`，改为显式构造所有 section；
-4. 把 `month_rotate` 传入新的网络统计实现；
-5. 合并 GPU 多卡/多厂商结果，保留本文件的 D-020 外部 IP 差异说明；
-6. 同步删除 `crates/agent-client/README.md` 中的过渡说明。
+状态：已收敛。`agent-client::supplement` 已删除，不再有第二套指标采集实现。
 
 ## D-020 不访问外部 IP 查询服务，NIC 地址优先于 custom
 
@@ -218,14 +292,15 @@ systemd `Restart=on-failure` 不重启，因此改为 1。
 影响：必须经 HTTP 代理访问面板的部署目前无法直接使用 Rust agent；需要直连或使用系统级
 透明代理。`--disable-compression` 不会改变行为。
 
-## D-022 `month_rotate` / netstatic 月度流量统计未实现
+## D-022 月度流量统计已收敛到 A03
 
 - **Go**：`month_rotate != 0` 时启动 `netstatic`，网络 `totalUp`/`totalDown` 按月度重置点统计。
-- **Rust**：`month_rotate` 仍被解析和记录，但上报的 `totalUp`/`totalDown` 始终是内核计数器
-  自启动以来的累计值，不做月度重置。
+- **Rust**：A03 已实现 netstatic；A05 通过
+  `MonitorOptions::from_monitor_config(..., month_rotate, ...)` 把配置传入
+  `agent_monitor::Collector`，由 `collect_report_metrics()` 产出月度累计值。
+  采样点与持久化语义见 A03 的 D-013。
 
-原因：netstatic 的持久化/月度滚动属于独立功能，A05 未包含。
-影响：依赖月度流量重置的面板统计会看到累计值；需要该行为时应在 A03/A05 后续任务补齐。
+状态：已收敛，不再是 A05 的差异；保留编号用于历史对照。
 
 ## D-023 `strict_proc` 下 uptime 读取失败不写入 message
 

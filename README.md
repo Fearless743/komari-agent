@@ -56,14 +56,16 @@ cargo build --release
 
 ## 基础系统采集
 
-`agent-monitor` 已实现 CPU、内存、Swap、负载、OS、uptime 与虚拟化的基础采集：
+`agent-monitor` 已实现 CPU、内存、Swap、负载、磁盘、网络、连接数、进程数、GPU、OS、
+uptime 与虚拟化的采集：
 
 - 所有 `/proc` 读取支持 `HOST_PROC` 注入；`HOST_SYS` 可注入 sysfs topology/DMI；
   未设置 `HOST_PROC` 时的本机回退与 `strict_proc` 行为见 crate README。
-- 周期上报使用 `Collector::sample_cpu(1s)` 固定采样窗口，再读取内存/Swap/负载/uptime；
-  基础信息使用 `collect_basic_info()`；`collect()` 仅用于诊断。
-- 磁盘、网络、连接数、进程数与 GPU 由 `agent-client` 的 `supplement` 模块临时补齐，
-  行为对齐 Go `GenerateReport`；A03 将把这些采集迁入 `agent-monitor`，收敛计划见 D-019。
+- 周期上报调用 `Collector::collect_report_metrics()`；A05 在调用前用
+  `sample_cpu(1s)` 固定 CPU 窗口并覆盖报告中的 CPU 值。基础信息使用
+  `collect_basic_info()`；`collect()` 仅用于诊断。
+- 磁盘、网络、月流量、连接/进程数与 GPU 采集已接入 `collect_report_metrics()` 与
+  `collect_basic_info()`（`disk_total`、`gpu_name`）。A05 只保留 IP-only 采集（D-019）。
 
 详见 [`crates/agent-monitor/README.md`](crates/agent-monitor/README.md)。
 

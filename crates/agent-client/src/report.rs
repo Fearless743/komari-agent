@@ -1,76 +1,60 @@
-//! Mapping from collected metrics to protocol v1 payloads.
+//! Mapping from `agent-monitor` metrics to protocol v1 payloads.
 //!
-//! The mapping is pure so it can be tested with synthetic data. Production
-//! collection lives in [`crate::monitor`]; this module owns the exact naming
-//! and `omitempty` semantics of the Go `monitoring.GenerateReport` payload.
+//! The mapping is pure so it can be tested with synthetic data. A03 owns the
+//! collection (disk, network, connections, process, GPU, message); this module
+//! only renames fields and applies Go's CPU floor.
 
-use agent_monitor::{LoadAverage, RamReport, ReportMetrics};
+use agent_monitor::{
+    ConnectionsReport, DiskInfo, GpuReport, LoadAverage, NetworkReport, RamReport, ReportMetrics,
+};
 use agent_protocol::{
     ConnectionsReportV1, CpuReportV1, DiskReportV1, GpuDeviceInfoV1, GpuReportV1, LoadReportV1,
     NetworkReportV1, RamReportV1, ReportV1,
 };
 
-/// Disk usage section.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DiskUsage {
-    pub total: u64,
-    pub used: u64,
-}
-
-/// Network counters and per-second rates.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct NetworkSample {
-    /// Bytes sent during the last sampling window.
-    pub up: u64,
-    /// Bytes received during the last sampling window.
-    pub down: u64,
-    /// Total bytes sent since boot (or since the monthly reset).
-    pub total_up: u64,
-    /// Total bytes received since boot (or since the monthly reset).
-    pub total_down: u64,
-}
-
-/// TCP/UDP connection counts.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ConnectionSample {
-    pub tcp: i64,
-    pub udp: i64,
-}
-
 /// Everything needed to build a v1 report.
+///
+/// This mirrors [`ReportMetrics`] field for field on purpose: adding a section
+/// in `agent-monitor` must be a compile error here, never a silently dropped
+/// value.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ReportSample {
     pub cpu_usage: f64,
     pub ram: RamReport,
     pub swap: RamReport,
     pub load: LoadAverage,
-    pub disk: DiskUsage,
-    pub network: NetworkSample,
-    pub connections: ConnectionSample,
+    pub disk: DiskInfo,
+    pub network: NetworkReport,
+    pub connections: ConnectionsReport,
+    pub gpu: Option<GpuReport>,
     pub uptime: u64,
     pub process: i64,
-    pub gpu: Option<GpuReportV1>,
     pub message: String,
 }
 
 impl ReportSample {
-    /// Start from the core metrics owned by `agent-monitor`.
+    /// Convert A03 metrics into a report sample without defaulting any field.
     pub fn from_metrics(metrics: ReportMetrics) -> Self {
         Self {
             cpu_usage: metrics.cpu.usage,
             ram: metrics.ram,
             swap: metrics.swap,
             load: metrics.load,
+            disk: metrics.disk,
+            network: metrics.network,
+            connections: metrics.connections,
+            gpu: metrics.gpu,
             uptime: metrics.uptime,
-            ..Self::default()
+            process: metrics.process,
+            message: metrics.message,
         }
     }
 }
 
 /// Build the protocol v1 report.
 ///
-/// Go clamps CPU usage to at least `0.001`; the collector already does that,
-/// but the mapping repeats it so an injected sample can never produce zero.
+/// Go clamps CPU usage to at least `0.001`; A03 already does that, but the
+/// mapping repeats it so an injected sample can never produce zero.
 pub fn build_report(sample: &ReportSample) -> ReportV1 {
     ReportV1 {
         cpu: CpuReportV1 {
@@ -110,11 +94,34 @@ pub fn build_report(sample: &ReportSample) -> ReportV1 {
             udp: sample.connections.udp,
             ..ConnectionsReportV1::default()
         },
-        gpu: sample.gpu.clone(),
+        gpu: sample.gpu.as_ref().map(gpu_to_v1),
         uptime: sample.uptime,
         process: sample.process,
         message: sample.message.clone(),
         ..ReportV1::default()
+    }
+}
+
+/// Convert A03's GPU report (detailed or model-only) to the wire type.
+fn gpu_to_v1(gpu: &GpuReport) -> GpuReportV1 {
+    GpuReportV1 {
+        count: gpu.count,
+        average_usage: gpu.average_usage,
+        detailed_info: gpu.detailed_info.as_ref().map(|devices| {
+            devices
+                .iter()
+                .map(|device| GpuDeviceInfoV1 {
+                    name: device.name.clone(),
+                    memory_total: device.memory_total,
+                    memory_used: device.memory_used,
+                    utilization: device.utilization,
+                    temperature: device.temperature,
+                    ..GpuDeviceInfoV1::default()
+                })
+                .collect()
+        }),
+        models: gpu.models.clone(),
+        ..GpuReportV1::default()
     }
 }
 
@@ -126,45 +133,14 @@ fn clamped_cpu(usage: f64) -> f64 {
     }
 }
 
-/// Detailed GPU shape: `{"count": N, "average_usage": x, "detailed_info": [...]}`.
-///
-/// Go divides by the number of devices without a zero check, so callers must
-/// not pass an empty slice. An empty slice yields `average_usage: 0` here.
-pub fn detailed_gpu_report(devices: &[GpuDeviceInfoV1]) -> GpuReportV1 {
-    let total_usage: f64 = devices.iter().map(|device| device.utilization).sum();
-    let average_usage = if devices.is_empty() {
-        0.0
-    } else {
-        total_usage / devices.len() as f64
-    };
-
-    GpuReportV1 {
-        count: Some(devices.len() as i64),
-        average_usage: Some(average_usage),
-        detailed_info: Some(devices.to_vec()),
-        ..GpuReportV1::default()
-    }
-}
-
-/// Model-only fallback used when detailed probing fails.
-pub fn gpu_models_report(models: Vec<String>) -> Option<GpuReportV1> {
-    if models.is_empty() {
-        None
-    } else {
-        Some(GpuReportV1 {
-            models: Some(models),
-            ..GpuReportV1::default()
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_monitor::{CpuReport, GpuInfo, ReportMetrics};
 
-    fn full_sample() -> ReportSample {
-        ReportSample {
-            cpu_usage: 12.5,
+    fn full_metrics() -> ReportMetrics {
+        ReportMetrics {
+            cpu: CpuReport { usage: 12.5 },
             ram: RamReport {
                 total: 16 * 1024 * 1024 * 1024,
                 used: 4 * 1024 * 1024 * 1024,
@@ -178,27 +154,47 @@ mod tests {
                 load5: 0.5,
                 load15: 0.25,
             },
-            disk: DiskUsage {
+            disk: DiskInfo {
                 total: 1000,
                 used: 400,
             },
-            network: NetworkSample {
+            network: NetworkReport {
                 up: 10,
                 down: 20,
                 total_up: 30,
                 total_down: 40,
             },
-            connections: ConnectionSample { tcp: 7, udp: 3 },
+            connections: ConnectionsReport { tcp: 7, udp: 3 },
+            gpu: GpuReport::models(vec!["NVIDIA GeForce RTX 4090".to_owned()]),
             uptime: 3600,
             process: 42,
-            gpu: gpu_models_report(vec!["NVIDIA GeForce RTX 4090".to_owned()]),
             message: "ok".to_owned(),
         }
     }
 
     #[test]
+    fn from_metrics_keeps_every_a03_field() {
+        let metrics = full_metrics();
+        let sample = ReportSample::from_metrics(metrics.clone());
+
+        assert_eq!(sample.cpu_usage, metrics.cpu.usage);
+        assert_eq!(sample.ram, metrics.ram);
+        assert_eq!(sample.swap, metrics.swap);
+        assert_eq!(sample.load, metrics.load);
+        assert_eq!(sample.disk, metrics.disk);
+        assert_eq!(sample.network, metrics.network);
+        assert_eq!(sample.connections, metrics.connections);
+        assert_eq!(sample.gpu, metrics.gpu);
+        assert_eq!(sample.uptime, metrics.uptime);
+        assert_eq!(sample.process, metrics.process);
+        assert_eq!(sample.message, metrics.message);
+    }
+
+    #[test]
     fn maps_every_section_with_the_go_field_names() {
-        let json = build_report(&full_sample()).to_json().unwrap();
+        let json = build_report(&ReportSample::from_metrics(full_metrics()))
+            .to_json()
+            .unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         assert_eq!(value["cpu"]["usage"], 12.5);
@@ -207,16 +203,50 @@ mod tests {
         assert_eq!(value["load"]["load1"], 1.0);
         assert_eq!(value["load"]["load15"], 0.25);
         assert_eq!(value["disk"]["total"], 1000);
+        assert_eq!(value["disk"]["used"], 400);
         assert_eq!(value["network"]["totalUp"], 30);
         assert_eq!(value["network"]["totalDown"], 40);
         assert_eq!(value["network"]["up"], 10);
+        assert_eq!(value["network"]["down"], 20);
         assert_eq!(value["connections"]["tcp"], 7);
+        assert_eq!(value["connections"]["udp"], 3);
         assert_eq!(value["uptime"], 3600);
         assert_eq!(value["process"], 42);
         assert_eq!(value["gpu"]["models"][0], "NVIDIA GeForce RTX 4090");
         assert_eq!(value["message"], "ok");
-        // Go always emits a `cpu` object even on a fully idle machine.
         assert!(value.get("uuid").is_none());
+    }
+
+    #[test]
+    fn detailed_gpu_fields_are_preserved() {
+        let mut metrics = full_metrics();
+        metrics.gpu = GpuReport::detailed(vec![
+            GpuInfo {
+                name: "GPU A".to_owned(),
+                memory_total: 100,
+                memory_used: 50,
+                utilization: 20.0,
+                temperature: 40,
+            },
+            GpuInfo {
+                name: "GPU B".to_owned(),
+                memory_total: 200,
+                memory_used: 100,
+                utilization: 40.0,
+                temperature: 50,
+            },
+        ]);
+
+        let value: serde_json::Value = serde_json::from_str(
+            &build_report(&ReportSample::from_metrics(metrics))
+                .to_json()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["gpu"]["count"], 2);
+        assert_eq!(value["gpu"]["average_usage"], 30.0);
+        assert_eq!(value["gpu"]["detailed_info"][0]["name"], "GPU A");
+        assert_eq!(value["gpu"]["detailed_info"][1]["memory_used"], 100);
     }
 
     #[test]
@@ -234,71 +264,6 @@ mod tests {
             ..ReportSample::default()
         };
         assert_eq!(build_report(&sample).cpu.usage, 0.002);
-    }
-
-    #[test]
-    fn detailed_gpu_shape_matches_go() {
-        let devices = vec![
-            GpuDeviceInfoV1 {
-                name: "GPU A".to_owned(),
-                memory_total: 100,
-                memory_used: 50,
-                utilization: 20.0,
-                temperature: 40,
-                ..GpuDeviceInfoV1::default()
-            },
-            GpuDeviceInfoV1 {
-                name: "GPU B".to_owned(),
-                memory_total: 200,
-                memory_used: 100,
-                utilization: 40.0,
-                temperature: 50,
-                ..GpuDeviceInfoV1::default()
-            },
-        ];
-
-        let gpu = detailed_gpu_report(&devices);
-        assert_eq!(gpu.count, Some(2));
-        assert_eq!(gpu.average_usage, Some(30.0));
-        assert_eq!(gpu.detailed_info.as_ref().unwrap().len(), 2);
-        assert!(gpu.models.is_none());
-    }
-
-    #[test]
-    fn gpu_model_fallback_is_none_when_detection_failed() {
-        assert!(gpu_models_report(Vec::new()).is_none());
-
-        let mut sample = full_sample();
-        sample.gpu = gpu_models_report(Vec::new());
-        let value: serde_json::Value =
-            serde_json::from_str(&build_report(&sample).to_json().unwrap()).unwrap();
-        assert!(value.get("gpu").is_none());
-    }
-
-    #[test]
-    fn collector_metrics_become_the_core_sample() {
-        let metrics = ReportMetrics {
-            cpu: agent_monitor::CpuReport { usage: 0.001 },
-            ram: RamReport { total: 10, used: 4 },
-            swap: RamReport { total: 2, used: 1 },
-            load: LoadAverage {
-                load1: 1.0,
-                load5: 2.0,
-                load15: 3.0,
-            },
-            uptime: 99,
-        };
-
-        let sample = ReportSample::from_metrics(metrics);
-        assert_eq!(sample.cpu_usage, 0.001);
-        assert_eq!(sample.ram.total, 10);
-        assert_eq!(sample.swap.used, 1);
-        assert_eq!(sample.load.load15, 3.0);
-        assert_eq!(sample.uptime, 99);
-        // Supplemental sections stay at their zero defaults.
-        assert_eq!(sample.disk.total, 0);
-        assert_eq!(sample.process, 0);
-        assert!(sample.gpu.is_none());
     }
 
     #[test]

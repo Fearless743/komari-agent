@@ -1,9 +1,7 @@
 //! Metric provider abstraction.
 //!
-//! The reporting loop only needs "give me a report sample" and "give me a
-//! basic info payload". Keeping that behind a trait lets the reconnect and
-//! scheduling tests run without touching `/proc`, the network or a one second
-//! CPU window.
+//! A03 owns all periodic/basic metrics. The provider only adds the fixed
+//! one-second CPU window Go uses for every report and the IP-only collector.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,8 +10,8 @@ use agent_monitor::{BasicInfo, Collector};
 use agent_protocol::BasicInfoV1;
 
 use crate::basic_info::build_basic_info;
+use crate::ip::{self, IpOptions};
 use crate::report::ReportSample;
-use crate::supplement::SystemSupplement;
 
 /// Source of report and basic-info data.
 pub trait ReportProvider: Send + Sync {
@@ -21,10 +19,10 @@ pub trait ReportProvider: Send + Sync {
     fn collect_basic_info(&self) -> BasicInfoV1;
 }
 
-/// Production provider backed by `agent-monitor` plus [`SystemSupplement`].
+/// Production provider backed by `agent-monitor` plus the IP-only module.
 pub struct MonitorReportProvider {
     collector: Arc<Collector>,
-    supplement: SystemSupplement,
+    ip_options: IpOptions,
     cpu_window: Duration,
     version: String,
 }
@@ -32,13 +30,13 @@ pub struct MonitorReportProvider {
 impl MonitorReportProvider {
     pub fn new(
         collector: Arc<Collector>,
-        supplement: SystemSupplement,
+        ip_options: IpOptions,
         cpu_window: Duration,
         version: impl Into<String>,
     ) -> Self {
         Self {
             collector,
-            supplement,
+            ip_options,
             cpu_window,
             version: version.into(),
         }
@@ -51,75 +49,19 @@ impl MonitorReportProvider {
 
 impl ReportProvider for MonitorReportProvider {
     fn collect_report(&self) -> ReportSample {
-        // Take the first network sample before the CPU window and the second
-        // one after it, so rates cover the real elapsed interval and the whole
-        // report still costs roughly one second like Go.
-        let started = std::time::Instant::now();
-        let network_start = self.supplement.network_totals().ok();
+        // Go's `Cpu()` always samples a one-second window. A03's
+        // `collect_report_metrics()` uses its cached CPU sample, so take the
+        // fixed window first and override the CPU section with that value.
         let cpu = self.collector.sample_cpu(self.cpu_window);
-        let elapsed = started.elapsed();
-        let extra = self.supplement.collect(network_start, elapsed);
+        let mut metrics = self.collector.collect_report_metrics();
+        metrics.cpu.usage = if cpu.usage <= 0.001 { 0.001 } else { cpu.usage };
 
-        let memory = self.collector.collect_memory();
-        let swap = self.collector.collect_swap();
-        let load = self.collector.collect_load();
-
-        // Go appends diagnostics in this order: network, connections, uptime,
-        // GPU. Disk errors are silent.
-        let mut message = String::new();
-        if let Some(error) = extra.network_error.as_deref() {
-            message.push_str(&format!("failed to get network speed: {error}\n"));
-        }
-        if let Some(error) = extra.connections_error.as_deref() {
-            message.push_str(&format!("failed to get connections: {error}\n"));
-        }
-
-        // The success path reads /proc/uptime once. Only a failed read needs
-        // the collector fallback (which re-reads); strict mode reports zero
-        // without a message.
-        #[cfg(target_os = "linux")]
-        let uptime = match agent_monitor::read_uptime(&self.collector.options().proc_root) {
-            Ok(uptime) => uptime,
-            Err(error) => {
-                if self.collector.options().strict_proc {
-                    0
-                } else {
-                    message.push_str(&format!("failed to get uptime: {error}\n"));
-                    self.collector.collect_uptime()
-                }
-            }
-        };
-        #[cfg(not(target_os = "linux"))]
-        let uptime = self.collector.collect_uptime();
-
-        if let Some(error) = extra.gpu_error.as_deref() {
-            message.push_str(&format!("failed to get detailed GPU info: {error}\n"));
-        }
-
-        ReportSample {
-            cpu_usage: cpu.usage,
-            ram: agent_monitor::RamReport {
-                total: memory.total,
-                used: memory.used,
-            },
-            swap: agent_monitor::RamReport {
-                total: swap.total,
-                used: swap.used,
-            },
-            load,
-            disk: extra.disk,
-            network: extra.network,
-            connections: extra.connections,
-            uptime,
-            process: extra.process,
-            gpu: extra.gpu,
-            message,
-        }
+        ReportSample::from_metrics(metrics)
     }
 
     fn collect_basic_info(&self) -> BasicInfoV1 {
         let info: BasicInfo = self.collector.collect_basic_info();
-        let supplement = self.supplement.basic();
-        build_basic_info(&info, &supplement, &self.version)
+        let (ipv4, ipv6) = ip::addresses(&self.ip_options);
+        build_basic_info(&info, &ipv4, &ipv6, &self.version)
     }
 }

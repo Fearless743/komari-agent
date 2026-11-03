@@ -6,8 +6,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use agent_client::{list_partitions, monitoring_mountpoints};
-use agent_monitor::{MemoryMode, read_meminfo};
+use agent_monitor::{MemoryMode, PartitionStat, is_physical_disk, parse_mounts, read_meminfo};
 
 /// Run `check-mem` against the configured proc root.
 ///
@@ -84,6 +83,58 @@ pub fn check_mem(
     Ok(())
 }
 
+fn read_partitions(proc_root: &Path) -> Vec<PartitionStat> {
+    std::fs::read_to_string(proc_root.join("mounts"))
+        .map(|content| parse_mounts(&content))
+        .unwrap_or_default()
+}
+
+/// Port of Go's `monitoring.DiskList()`: physical partitions, one per device,
+/// keeping the shortest mountpoint, formatted as `mountpoint (fstype)`.
+fn monitoring_mountpoints(proc_root: &Path, include_mountpoints: &str) -> Vec<String> {
+    let include = include_mountpoints.trim();
+    if !include.is_empty() {
+        return include
+            .split(';')
+            .map(str::trim)
+            .filter(|mountpoint| !mountpoint.is_empty())
+            .map(str::to_owned)
+            .collect();
+    }
+
+    let mut devices: Vec<(String, PartitionStat)> = Vec::new();
+    for partition in read_partitions(proc_root) {
+        if !is_physical_disk(&partition) {
+            continue;
+        }
+
+        let key = if partition.fstype.eq_ignore_ascii_case("zfs") {
+            partition
+                .device
+                .split('/')
+                .next()
+                .unwrap_or(&partition.device)
+                .to_owned()
+        } else {
+            partition.device.clone()
+        };
+
+        match devices.iter_mut().find(|(device, _)| *device == key) {
+            Some((_, existing)) => {
+                if partition.mountpoint.len() < existing.mountpoint.len() {
+                    *existing = partition;
+                }
+            }
+            None => devices.push((key, partition)),
+        }
+    }
+
+    devices
+        .into_iter()
+        .map(|(_, partition)| format!("{} ({})", partition.mountpoint, partition.fstype))
+        .collect()
+}
+
 fn write_mib(out: &mut impl Write, label: &str, bytes: u64) -> io::Result<()> {
     writeln!(out, "{label}: {} MiB", bytes / 1024 / 1024)
 }
@@ -143,7 +194,7 @@ pub fn list_disk(
     include_mountpoints: &str,
     out: &mut impl Write,
 ) -> io::Result<()> {
-    let partitions = list_partitions(proc_root).unwrap_or_default();
+    let partitions = read_partitions(proc_root);
 
     writeln!(out, "All Disk Partitions:")?;
     writeln!(out, "Mountpoint\tFstype")?;
@@ -151,7 +202,7 @@ pub fn list_disk(
         writeln!(out, "{}\t{}", partition.mountpoint, partition.fstype)?;
     }
 
-    let monitored = monitoring_mountpoints(proc_root, include_mountpoints).unwrap_or_default();
+    let monitored = monitoring_mountpoints(proc_root, include_mountpoints);
     writeln!(out, "Monitoring Mountpoints: [{}]", monitored.join(" "))?;
     Ok(())
 }

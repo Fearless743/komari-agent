@@ -1,9 +1,12 @@
 //! Platform fallbacks.
 //!
-//! Linux is the full implementation. Other platforms, and Linux runs where the
-//! proc files are unavailable, use `sysinfo` for the same values. Keeping the
-//! fallback compiled on Linux means its API usage is checked by the normal test
-//! suite.
+//! Linux is the full implementation. Other platforms use `sysinfo` for CPU,
+//! memory, swap, load, uptime, OS and network counters. The fallback is also
+//! compiled on Linux and used when proc reads for those metrics fail (unless
+//! `strict_proc` is set). Exceptions: Linux disk does not fall back to
+//! `sysinfo` when the mount table is unreadable, and process count /
+//! connections have their own platform paths. Keeping the fallback compiled on
+//! Linux means its API usage is checked by the normal test suite.
 
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};

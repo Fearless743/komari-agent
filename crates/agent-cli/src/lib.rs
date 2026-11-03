@@ -14,8 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tracing_subscriber::EnvFilter;
 
 pub use runtime::{
-    RunExit, RuntimeDeps, RuntimeError, client_options, monitor_options, resolve_config, run_with,
-    supplement_options,
+    RunExit, RuntimeDeps, RuntimeError, client_options, ip_options, monitor_options,
+    resolve_config, run_with,
 };
 
 /// Agent version.
