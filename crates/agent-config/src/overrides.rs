@@ -22,7 +22,7 @@ pub struct CliOverrides {
 
     #[arg(
         long = "disable-auto-update",
-        num_args = 0..=1,
+        num_args = 0..=1, require_equals = true,
         default_missing_value = "true",
         value_name = "BOOL",
         help = "Disable automatic updates"
@@ -56,7 +56,7 @@ pub struct CliOverrides {
     #[arg(
         long = "ignore-unsafe-cert",
         short = 'u',
-        num_args = 0..=1,
+        num_args = 0..=1, require_equals = true,
         default_missing_value = "true",
         value_name = "BOOL",
         help = "Ignore unsafe certificate errors"
@@ -134,7 +134,7 @@ pub struct CliOverrides {
 
     #[arg(
         long = "memory-include-cache",
-        num_args = 0..=1,
+        num_args = 0..=1, require_equals = true,
         default_missing_value = "true",
         value_name = "BOOL",
         help = "Include cache/buffer in memory usage"
@@ -143,7 +143,7 @@ pub struct CliOverrides {
 
     #[arg(
         long = "memory-exclude-bcf",
-        num_args = 0..=1,
+        num_args = 0..=1, require_equals = true,
         default_missing_value = "true",
         value_name = "BOOL",
         help = "Use \"raminfo.Used = v.Total - v.Free - v.Buffers - v.Cached\" calculation for memory usage"
@@ -159,7 +159,7 @@ pub struct CliOverrides {
 
     #[arg(
         long = "gpu",
-        num_args = 0..=1,
+        num_args = 0..=1, require_equals = true,
         default_missing_value = "true",
         value_name = "BOOL",
         help = "Enable detailed GPU monitoring (usage, memory, multi-GPU support)"
@@ -182,7 +182,7 @@ pub struct CliOverrides {
 
     #[arg(
         long = "get-ip-addr-from-nic",
-        num_args = 0..=1,
+        num_args = 0..=1, require_equals = true,
         default_missing_value = "true",
         value_name = "BOOL",
         help = "Get IP address from network interface"
@@ -210,7 +210,7 @@ pub struct CliOverrides {
 
     #[arg(
         long = "disable-compression",
-        num_args = 0..=1,
+        num_args = 0..=1, require_equals = true,
         default_missing_value = "true",
         value_name = "BOOL",
         help = "Disable v2 gzip/permessage-deflate compression"

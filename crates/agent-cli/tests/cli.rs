@@ -69,6 +69,58 @@ fn valid_flags_load_configuration_and_exit_successfully() {
 }
 
 #[test]
+fn boolean_flags_do_not_consume_the_next_token() {
+    let output = agent()
+        .args(["--disable-auto-update", "foo"])
+        .output()
+        .expect("run komari-agent");
+
+    assert_eq!(output.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("disable_auto_update: true"),
+        "stderr: {stderr}"
+    );
+
+    let output = agent()
+        .args(["-u", "foo"])
+        .output()
+        .expect("run komari-agent");
+
+    assert_eq!(output.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ignore_unsafe_cert: true"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn boolean_flags_support_the_equals_form() {
+    let disabled = agent()
+        .args(["--disable-auto-update=false"])
+        .output()
+        .expect("run komari-agent");
+    assert_eq!(disabled.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&disabled.stderr).contains("disable_auto_update: false"),
+        "stderr: {}",
+        String::from_utf8_lossy(&disabled.stderr)
+    );
+
+    let enabled = agent()
+        .arg("--disable-auto-update")
+        .output()
+        .expect("run komari-agent");
+    assert_eq!(enabled.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&enabled.stderr).contains("disable_auto_update: true"),
+        "stderr: {}",
+        String::from_utf8_lossy(&enabled.stderr)
+    );
+}
+
+#[test]
 fn positional_arguments_are_ignored_like_go() {
     let output = agent()
         .args(["some-positional", "another", "--interval", "2.5"])

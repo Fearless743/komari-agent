@@ -109,5 +109,7 @@ AGENT_TOKEN=your-token AGENT_ENDPOINT=https://panel.example.com ./komari-agent
   该差异已登记在 [`docs/parity-deviations.md`](docs/parity-deviations.md)（D-001），待与 Go 对等验收确认。
 - Go 版本会静默忽略未知参数；Rust 版本默认对未知参数报错（退出码 `2`），同样登记为 D-002。
 - 位置参数与 Go 一致：接受但忽略。
+- 布尔参数与 Go 一致：`--flag` / `-u` 表示启用，显式赋值需用等号形式（如
+  `--disable-auto-update=false`）；紧跟其后的 token 不会被当作布尔值吞掉。
 - `--autoUpdate` 与 `--memory-mode-available` 已弃用，仍会被接受并打印警告后忽略。
 - `check-mem`、`list-disk` 子命令依赖采集实现，将在后续任务中补齐。
