@@ -193,12 +193,13 @@ fn platform_detect(_options: &MonitorOptions) -> String {
         .output();
 
     match output {
-        Ok(output) if output.status.success() => match String::from_utf8_lossy(&output.stdout).trim()
-        {
-            "1" => "virtualized".to_owned(),
-            "0" => "none".to_owned(),
-            _ => String::new(),
-        },
+        Ok(output) if output.status.success() => {
+            match String::from_utf8_lossy(&output.stdout).trim() {
+                "1" => "virtualized".to_owned(),
+                "0" => "none".to_owned(),
+                _ => String::new(),
+            }
+        }
         _ => String::new(),
     }
 }

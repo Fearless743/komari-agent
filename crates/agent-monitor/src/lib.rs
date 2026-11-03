@@ -15,6 +15,7 @@
 //! and passes the value to [`MonitorOptions::from_config`]. The collector itself
 //! never reads the process environment.
 
+mod collector;
 mod cpu;
 mod error;
 mod load;
@@ -27,13 +28,27 @@ mod types;
 mod uptime;
 mod virtualization;
 
+pub use collector::Collector;
 pub use error::MonitorError;
 pub use options::{DEFAULT_PROC_ROOT, HOST_PROC_ENV, MonitorOptions};
 pub use procfs::{
     CpuTimes, CpuUsage, ProcMemInfo, ProcStat, parse_loadavg, parse_meminfo, parse_proc_stat,
     parse_uptime, read_loadavg, read_meminfo, read_proc_stat, read_uptime, usage_between,
 };
-pub use virtualization::detect_virtualization;
 pub use types::{
     BasicInfo, CpuInfo, LoadAverage, MemoryInfo, MemoryMode, OsInfo, SwapInfo, SystemSnapshot,
 };
+pub use virtualization::detect_virtualization;
+
+/// Collect a snapshot using the default `/proc` root and Go-compatible defaults.
+///
+/// This is a convenience for callers that do not need stateful CPU sampling;
+/// it blocks for up to one second on the first CPU sample, like the Go agent.
+pub fn collect() -> SystemSnapshot {
+    Collector::new(MonitorOptions::default()).collect()
+}
+
+/// Collect the basic information payload with default options.
+pub fn collect_basic_info() -> BasicInfo {
+    Collector::new(MonitorOptions::default()).collect_basic_info()
+}

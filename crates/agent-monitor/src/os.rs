@@ -25,10 +25,7 @@ pub(crate) fn collect(options: &MonitorOptions) -> OsInfo {
 pub(crate) fn os_name() -> String {
     #[cfg(target_os = "linux")]
     {
-        if let Some(name) = read_os_release() {
-            return name;
-        }
-        return "Linux".to_owned();
+        read_os_release().unwrap_or_else(platform::fallback::os_name)
     }
 
     #[cfg(not(target_os = "linux"))]

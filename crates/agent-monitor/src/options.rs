@@ -53,7 +53,11 @@ impl MonitorOptions {
     ///
     /// An empty `host_proc` keeps the default `/proc` root, matching the Go
     /// agent where an empty `HOST_PROC` is ignored.
-    pub fn from_config(host_proc: &str, memory_include_cache: bool, memory_report_raw_used: bool) -> Self {
+    pub fn from_config(
+        host_proc: &str,
+        memory_include_cache: bool,
+        memory_report_raw_used: bool,
+    ) -> Self {
         let mut options = Self::default();
         let trimmed = host_proc.trim();
         if !trimmed.is_empty() {
