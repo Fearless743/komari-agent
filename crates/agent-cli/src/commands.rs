@@ -6,7 +6,9 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use agent_monitor::{MemoryMode, PartitionStat, is_physical_disk, parse_mounts, read_meminfo};
+use agent_monitor::{
+    MemoryMode, PartitionStat, is_physical_disk, parse_mountinfo, parse_mounts, read_meminfo,
+};
 
 /// Run `check-mem` against the configured proc root.
 ///
@@ -84,9 +86,31 @@ pub fn check_mem(
 }
 
 fn read_partitions(proc_root: &Path) -> Vec<PartitionStat> {
-    std::fs::read_to_string(proc_root.join("mounts"))
-        .map(|content| parse_mounts(&content))
-        .unwrap_or_default()
+    // Follow A03's Linux mount-table fallback chain, with the bare `mounts`
+    // file kept for injected HOST_PROC fixtures.
+    const CANDIDATES: &[(&str, bool)] = &[
+        ("1/mountinfo", true),
+        ("1/mounts", false),
+        ("self/mountinfo", true),
+        ("self/mounts", false),
+        ("mounts", false),
+    ];
+
+    for (relative, is_mountinfo) in CANDIDATES {
+        let Ok(content) = std::fs::read_to_string(proc_root.join(relative)) else {
+            continue;
+        };
+        let partitions = if *is_mountinfo {
+            parse_mountinfo(&content)
+        } else {
+            parse_mounts(&content)
+        };
+        if !partitions.is_empty() {
+            return partitions;
+        }
+    }
+
+    Vec::new()
 }
 
 /// Port of Go's `monitoring.DiskList()`: physical partitions, one per device,
