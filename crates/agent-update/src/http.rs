@@ -13,6 +13,9 @@ use crate::error::UpdateError;
 pub struct HttpRequest {
     pub url: String,
     pub headers: Vec<(String, String)>,
+    /// Optional hard limit for the response body. Production clients should
+    /// enforce it while streaming instead of after buffering the whole body.
+    pub max_body_bytes: Option<u64>,
 }
 
 /// A complete HTTP response body.
@@ -36,7 +39,7 @@ pub struct ReqwestUpdateHttp {
 
 impl ReqwestUpdateHttp {
     /// Build a client with the given timeout and certificate policy.
-    pub fn new(timeout: Duration, ignore_unsafe_cert: bool) -> Self {
+    pub fn new(timeout: Duration, ignore_unsafe_cert: bool) -> Result<Self, UpdateError> {
         let timeout = if timeout.is_zero() {
             Duration::from_secs(60)
         } else {
@@ -48,9 +51,9 @@ impl ReqwestUpdateHttp {
             .danger_accept_invalid_certs(ignore_unsafe_cert)
             .user_agent(format!("komari-agent-rs/{}", env!("CARGO_PKG_VERSION")))
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .map_err(|err| UpdateError::Http(format!("failed to build HTTP client: {err}")))?;
 
-        Self { client }
+        Ok(Self { client })
     }
 
     /// Use an externally configured client.
@@ -62,6 +65,14 @@ impl ReqwestUpdateHttp {
     }
 }
 
+fn map_reqwest_error(err: reqwest::Error) -> UpdateError {
+    if err.is_timeout() {
+        UpdateError::Timeout
+    } else {
+        UpdateError::Http(err.to_string())
+    }
+}
+
 #[async_trait]
 impl UpdateHttp for ReqwestUpdateHttp {
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, UpdateError> {
@@ -70,16 +81,29 @@ impl UpdateHttp for ReqwestUpdateHttp {
             builder = builder.header(name, value);
         }
 
-        let response = builder
-            .send()
-            .await
-            .map_err(|err| UpdateError::Http(err.to_string()))?;
+        let mut response = builder.send().await.map_err(map_reqwest_error)?;
         let status = response.status().as_u16();
-        let body = response
-            .bytes()
-            .await
-            .map_err(|err| UpdateError::Http(err.to_string()))?
-            .to_vec();
+
+        if let Some(limit) = request.max_body_bytes
+            && let Some(length) = response.content_length()
+            && length > limit
+        {
+            return Err(UpdateError::TooLarge {
+                limit,
+                actual: length,
+            });
+        }
+
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(map_reqwest_error)? {
+            if let Some(limit) = request.max_body_bytes {
+                let actual = body.len() as u64 + chunk.len() as u64;
+                if actual > limit {
+                    return Err(UpdateError::TooLarge { limit, actual });
+                }
+            }
+            body.extend_from_slice(&chunk);
+        }
 
         Ok(HttpResponse { status, body })
     }

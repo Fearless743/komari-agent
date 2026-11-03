@@ -15,6 +15,9 @@ pub enum UpdateError {
     #[error("HTTP request failed: {0}")]
     Http(String),
 
+    #[error("HTTP request timed out")]
+    Timeout,
+
     #[error("HTTP request to {url} failed with status {status}: {body}")]
     HttpStatus {
         url: String,
@@ -30,6 +33,9 @@ pub enum UpdateError {
 
     #[error("no release asset found for {os}-{arch}")]
     NoAsset { os: String, arch: String },
+
+    #[error("repository {repo} has no usable release")]
+    NoRelease { repo: String },
 
     #[error("download is empty")]
     EmptyDownload,

@@ -59,7 +59,12 @@ impl UpdateHttp for FakeHttp {
     }
 }
 
-fn release_json(tag: &str, assets: &[(&str, u64, Option<&str>)]) -> Vec<u8> {
+fn release_value(
+    tag: &str,
+    assets: &[(&str, u64, Option<&str>)],
+    draft: bool,
+    prerelease: bool,
+) -> Value {
     let assets: Vec<Value> = assets
         .iter()
         .map(|(name, size, digest)| {
@@ -72,12 +77,21 @@ fn release_json(tag: &str, assets: &[(&str, u64, Option<&str>)]) -> Vec<u8> {
         })
         .collect();
 
-    serde_json::to_vec(&json!({
+    json!({
         "tag_name": tag,
         "name": tag,
+        "draft": draft,
+        "prerelease": prerelease,
         "assets": assets,
-    }))
-    .unwrap()
+    })
+}
+
+fn releases_json(releases: &[Value]) -> Vec<u8> {
+    serde_json::to_vec(releases).unwrap()
+}
+
+fn release_json(tag: &str, assets: &[(&str, u64, Option<&str>)]) -> Vec<u8> {
+    releases_json(&[release_value(tag, assets, false, false)])
 }
 
 fn options(current: &str, target: Option<PathBuf>) -> UpdateOptions {
@@ -151,8 +165,77 @@ async fn check_latest_parses_release_and_selects_platform_asset() {
     assert_eq!(requests.len(), 1);
     assert_eq!(
         requests[0].url,
-        "https://api.github.com/repos/owner/repo/releases/latest"
+        "https://api.github.com/repos/owner/repo/releases?per_page=100"
     );
+}
+
+#[tokio::test]
+async fn selects_highest_stable_release_skipping_draft_and_prerelease() {
+    let asset = "komari-agent-linux-amd64";
+    let http = FakeHttp::new(vec![Reply::Response(
+        200,
+        releases_json(&[
+            release_value("v2.0.0", &[(asset, 10, None)], false, false),
+            release_value("v9.0.0", &[(asset, 10, None)], true, false),
+            release_value("v8.0.0", &[(asset, 10, None)], false, true),
+            release_value("v3.0.0", &[(asset, 10, None)], false, false),
+        ]),
+    )]);
+    let updater = Updater::new(options("1.0.0", None), http).unwrap();
+
+    let latest = updater.check_latest().await.unwrap();
+    assert_eq!(latest.version.to_string(), "3.0.0");
+}
+
+#[tokio::test]
+async fn skips_newer_releases_without_platform_asset() {
+    let http = FakeHttp::new(vec![Reply::Response(
+        200,
+        releases_json(&[
+            release_value(
+                "v4.0.0",
+                &[("komari-agent-darwin-arm64", 10, None)],
+                false,
+                false,
+            ),
+            release_value(
+                "v2.0.0",
+                &[("komari-agent-linux-amd64", 10, None)],
+                false,
+                false,
+            ),
+        ]),
+    )]);
+    let updater = Updater::new(options("1.0.0", None), http).unwrap();
+
+    let latest = updater.check_latest().await.unwrap();
+    assert_eq!(latest.version.to_string(), "2.0.0");
+}
+
+#[tokio::test]
+async fn empty_release_list_reports_no_release() {
+    let http = FakeHttp::new(vec![Reply::Response(200, releases_json(&[]))]);
+    let updater = Updater::new(options("1.0.0", None), http).unwrap();
+
+    let error = updater.check_latest().await.unwrap_err();
+    assert!(matches!(error, UpdateError::NoRelease { .. }), "{error:?}");
+}
+
+#[tokio::test]
+async fn disabled_updater_does_not_parse_invalid_current_version() {
+    let http = FakeHttp::new(Vec::new());
+    let updater = Updater::new(
+        UpdateOptions {
+            disable_auto_update: true,
+            ..options("not-a-version", None)
+        },
+        http.clone(),
+    )
+    .unwrap();
+
+    let outcome = updater.check_and_update().await.unwrap();
+    assert_eq!(outcome, UpdateOutcome::Disabled);
+    assert!(http.requests().is_empty());
 }
 
 #[tokio::test]

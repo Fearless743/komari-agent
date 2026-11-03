@@ -110,18 +110,16 @@ pub enum UpdateOutcome {
 pub struct Updater {
     http: Arc<dyn UpdateHttp>,
     options: UpdateOptions,
-    current: Version,
 }
 
 impl Updater {
     /// Build an updater with an injected HTTP transport.
+    ///
+    /// The current version is parsed lazily, after `disable_auto_update` has
+    /// been checked, so an explicitly disabled updater does not fail on an
+    /// invalid version string.
     pub fn new(options: UpdateOptions, http: Arc<dyn UpdateHttp>) -> Result<Self, UpdateError> {
-        let current = parse_version(&options.current_version)?;
-        Ok(Self {
-            http,
-            options,
-            current,
-        })
+        Ok(Self { http, options })
     }
 
     /// Build an updater with the production `reqwest` transport.
@@ -133,13 +131,13 @@ impl Updater {
         let http = Arc::new(crate::http::ReqwestUpdateHttp::new(
             timeout,
             ignore_unsafe_cert,
-        ));
+        )?);
         Self::new(options, http)
     }
 
-    /// Parsed current version.
-    pub fn current_version(&self) -> &Version {
-        &self.current
+    /// Parse and return the configured current version.
+    pub fn current_version(&self) -> Result<Version, UpdateError> {
+        Ok(parse_version(&self.options.current_version)?)
     }
 
     /// Effective options.
@@ -147,11 +145,14 @@ impl Updater {
         &self.options
     }
 
-    /// Query the latest release and select the platform asset without
-    /// downloading anything.
+    /// Query the release list and select the highest non-draft,
+    /// non-prerelease version that has an asset for this platform.
+    ///
+    /// This mirrors `go-github-selfupdate`'s `DetectLatest`, which fetches the
+    /// release list rather than relying on the single `latest` endpoint.
     pub async fn check_latest(&self) -> Result<LatestRelease, UpdateError> {
         let url = format!(
-            "{}/repos/{}/releases/latest",
+            "{}/repos/{}/releases?per_page=100",
             self.options.api_base.trim_end_matches('/'),
             self.options.repo.trim_matches('/')
         );
@@ -167,6 +168,7 @@ impl Updater {
                     ),
                     ("X-GitHub-Api-Version".to_owned(), "2022-11-28".to_owned()),
                 ],
+                max_body_bytes: None,
             })
             .await?;
 
@@ -178,21 +180,55 @@ impl Updater {
             });
         }
 
-        let release: GithubRelease =
+        let releases: Vec<GithubRelease> =
             serde_json::from_slice(&response.body).map_err(UpdateError::InvalidJson)?;
 
-        if release.tag_name.trim().is_empty() {
-            return Err(UpdateError::MissingTag);
+        let platform = &self.options.platform;
+        let mut saw_release = false;
+        let mut best: Option<(Version, GithubRelease, Asset)> = None;
+
+        for release in releases {
+            if release.draft || release.prerelease {
+                continue;
+            }
+            saw_release = true;
+
+            if release.tag_name.trim().is_empty() {
+                continue;
+            }
+
+            let version = match parse_version(&release.tag_name) {
+                Ok(version) => version,
+                Err(err) => {
+                    tracing::warn!(tag = %release.tag_name, %err, "skipping release with invalid version");
+                    continue;
+                }
+            };
+
+            let Some(asset) = select_asset(&release.assets, platform).cloned() else {
+                continue;
+            };
+
+            let is_newer = best
+                .as_ref()
+                .is_none_or(|(best_version, _, _)| version.cmp_precedence(best_version).is_gt());
+
+            if is_newer {
+                best = Some((version, release, asset));
+            }
         }
 
-        let version = parse_version(&release.tag_name)?;
-        let platform = &self.options.platform;
-        let asset = select_asset(&release.assets, platform)
-            .cloned()
-            .ok_or_else(|| UpdateError::NoAsset {
-                os: platform.os.clone(),
-                arch: platform.arch.clone(),
-            })?;
+        let Some((version, release, asset)) = best else {
+            if saw_release {
+                return Err(UpdateError::NoAsset {
+                    os: platform.os.clone(),
+                    arch: platform.arch.clone(),
+                });
+            }
+            return Err(UpdateError::NoRelease {
+                repo: self.options.repo.clone(),
+            });
+        };
 
         Ok(LatestRelease {
             version,
@@ -207,11 +243,12 @@ impl Updater {
             return Ok(UpdateOutcome::Disabled);
         }
 
+        let current = self.current_version()?;
         let latest = self.check_latest().await?;
 
-        if !need_update(&self.current, &latest.version) {
+        if !need_update(&current, &latest.version) {
             return Ok(UpdateOutcome::UpToDate {
-                current: self.current.clone(),
+                current,
                 latest: latest.version,
             });
         }
@@ -227,6 +264,8 @@ impl Updater {
             .send(HttpRequest {
                 url: latest.asset.browser_download_url.clone(),
                 headers: vec![("Accept".to_owned(), "application/octet-stream".to_owned())],
+                max_body_bytes: (self.options.max_download_size > 0)
+                    .then_some(self.options.max_download_size),
             })
             .await?;
 
@@ -270,7 +309,7 @@ impl Updater {
         replace_file_atomically(&target, &bytes)?;
 
         Ok(UpdateOutcome::Updated {
-            previous: self.current.clone(),
+            previous: current,
             latest: latest.version,
             target,
         })
