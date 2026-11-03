@@ -41,7 +41,8 @@ DNS 错误分类（`DnsError`）：`Timeout`、`NxDomain`、`ServFail`、`Refuse
 2. 文件不存在或损坏时向 `{endpoint}/api/clients/register?name={hostname}` 发送
    `POST {"key":"..."}`；
 3. 校验 HTTP 状态必须为 `200`、`status` 必须为 `success`；
-4. 以两空格缩进 JSON 保存 `{uuid, token}` 并返回给调用方。
+4. 以两空格缩进 JSON 保存 `{uuid, token}`，并返回 `DiscoveryResult { endpoint, config, registered }`
+   供调用方直接用于后续面板连接。
 
 请求头：
 
@@ -112,3 +113,7 @@ cargo test -p agent-discovery -p agent-update
    但不支持任意自定义更新服务器。
 5. **IDN 边界**：Rust 使用 `idna` crate，Go 使用 `golang.org/x/net/idna`；极端非法域名
    的接受/拒绝集合可能不同，常规 Punycode 转换一致。
+6. **更新请求的自定义 DNS**：`agent-update` 默认使用系统 DNS。Go 会把
+   `dnsresolver.GetHTTPClient` 赋给 `http.DefaultClient`，使更新也走自定义 DNS；Rust 通过
+   `ReqwestUpdateHttp::with_client` 接受上层构建的 `reqwest::Client`，A06 尚未在 CLI 主循环
+   中接线，因此自定义 DNS 对更新请求的生效依赖后续集成任务。
