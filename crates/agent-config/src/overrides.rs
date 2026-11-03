@@ -213,7 +213,7 @@ pub struct CliOverrides {
         num_args = 0..=1, require_equals = true,
         default_missing_value = "true",
         value_name = "BOOL",
-        help = "Disable v2 gzip/permessage-deflate compression"
+        help = "Disable WebSocket permessage-deflate compression (v2 gzip is not implemented)"
     )]
     pub disable_compression: Option<bool>,
 
