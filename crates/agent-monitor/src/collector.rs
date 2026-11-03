@@ -225,6 +225,24 @@ impl Collector {
     }
 }
 
+impl Drop for Collector {
+    fn drop(&mut self) {
+        let mut guard = self.net_static.lock();
+        if let Some(store) = guard.as_mut() {
+            let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0);
+            if store.flush(now)
+                && let Err(error) = store.save()
+            {
+                tracing::warn!(
+                    path = %store.path().display(),
+                    %error,
+                    "failed to save monthly network traffic database on drop"
+                );
+            }
+        }
+    }
+}
+
 impl Default for Collector {
     fn default() -> Self {
         Self::new(MonitorOptions::default())

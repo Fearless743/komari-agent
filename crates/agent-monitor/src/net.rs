@@ -251,8 +251,8 @@ fn collect_monthly(
 
     let mut guard = state.lock();
     let store = guard.get_or_insert_with(|| NetStaticStore::load(&options.net_static_path));
-    store.record(&counters, now);
-    if let Err(error) = store.save() {
+    let flush_due = store.record_filtered(&counters, now, |name| filter.should_include(name));
+    if flush_due && let Err(error) = store.save() {
         tracing::warn!(
             path = %store.path().display(),
             %error,
@@ -386,6 +386,8 @@ docker0: 9000 90 0 0 0 0 0 0 8000 80 0 0 0 0 0 0
 
     #[test]
     fn counter_wrap_and_interface_removal_clamp_to_zero() {
+        // Deliberate difference (D-016): Go's uint64 subtraction would report
+        // a near-2^64 rate here; the task requires wrap protection.
         let first = vec![counters("eth0", 9000, 8000)];
         let second = vec![counters("eth0", 10, 20)];
         let speed = network_speed(&first, &second, &NicFilter::new("", ""));

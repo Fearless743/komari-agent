@@ -9,10 +9,12 @@
 //! }
 //! ```
 //!
-//! The Go implementation samples every two seconds on a background goroutine.
-//! This crate stores one delta on every report interval instead: the library
-//! has no always-running scheduler, and the reporting loop is the natural
-//! sampling point. Counter wrap/reset is treated as a zero delta.
+//! The Go implementation samples every two seconds on a background goroutine
+//! and flushes the in-memory cache into one record every `save_interval`
+//! seconds. This crate has no background scheduler, so the reporting loop
+//! samples; deltas are still accumulated in a cache and only merged into a
+//! single on-disk record when `save_interval` elapses. This keeps disk writes
+//! and record counts independent of the report interval.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -47,6 +49,8 @@ pub struct NetStaticConfig {
     pub detect_interval: f64,
     #[serde(default = "default_save_interval")]
     pub save_interval: f64,
+    /// Retained for on-disk compatibility. The live interface filter lives in
+    /// [`crate::NicFilter`]; this list is ignored and cleared on load.
     #[serde(default)]
     pub nics: Vec<String>,
 }
@@ -58,6 +62,31 @@ impl Default for NetStaticConfig {
             detect_interval: DEFAULT_DETECT_INTERVAL,
             save_interval: DEFAULT_SAVE_INTERVAL,
             nics: Vec::new(),
+        }
+    }
+}
+
+impl NetStaticConfig {
+    /// Go's `configOrDefault`: explicit zero values are replaced by defaults.
+    pub fn normalized(mut self) -> Self {
+        if self.data_preserve_day == 0.0 {
+            self.data_preserve_day = DEFAULT_DATA_PRESERVE_DAYS;
+        }
+        if self.detect_interval == 0.0 {
+            self.detect_interval = DEFAULT_DETECT_INTERVAL;
+        }
+        if self.save_interval == 0.0 {
+            self.save_interval = DEFAULT_SAVE_INTERVAL;
+        }
+        self
+    }
+
+    fn save_interval_seconds(&self) -> u64 {
+        let interval = self.clone().normalized().save_interval;
+        if !interval.is_finite() || interval <= 0.0 {
+            DEFAULT_SAVE_INTERVAL as u64
+        } else {
+            interval as u64
         }
     }
 }
@@ -92,6 +121,9 @@ pub struct NetStaticStore {
     path: PathBuf,
     data: NetStatic,
     last_counters: BTreeMap<String, (u64, u64)>,
+    /// Deltas accumulated since the last flush, one entry per report.
+    pending: BTreeMap<String, Vec<TrafficData>>,
+    last_flush: Option<u64>,
 }
 
 impl NetStaticStore {
@@ -102,6 +134,8 @@ impl NetStaticStore {
             path,
             data: NetStatic::default(),
             last_counters: BTreeMap::new(),
+            pending: BTreeMap::new(),
+            last_flush: None,
         };
         store.reload();
         store
@@ -116,7 +150,14 @@ impl NetStaticStore {
             return;
         }
         match serde_json::from_str::<NetStatic>(&content) {
-            Ok(data) => self.data = data,
+            Ok(mut data) => {
+                data.config = data.config.normalized();
+                // The persisted allow-list predates the current runtime
+                // filter and may be stale (renamed/deleted interfaces). The
+                // report layer owns filtering now.
+                data.config.nics.clear();
+                self.data = data;
+            }
             Err(_) => {
                 let backup = self.path.with_extension("json.bak");
                 let _ = fs::rename(&self.path, backup);
@@ -124,40 +165,52 @@ impl NetStaticStore {
         }
     }
 
+    /// Replace the accounting configuration. Zero values are normalised to
+    /// the Go defaults.
+    pub fn set_config(&mut self, config: NetStaticConfig) {
+        self.data.config = config.normalized();
+    }
+
     /// Path of the backing file.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// Current database contents.
+    /// Current flushed database contents.
     pub fn data(&self) -> &NetStatic {
         &self.data
     }
 
-    /// Record one sample of cumulative interface counters.
+    /// Deltas waiting for the next flush.
+    pub fn pending(&self) -> &BTreeMap<String, Vec<TrafficData>> {
+        &self.pending
+    }
+
+    /// Record one sample of cumulative interface counters, accepting every
+    /// interface.
     ///
     /// The first sample for an interface only primes the delta tracker, which
-    /// matches Go's `sampleOnceLocked`. Zero deltas are not stored to keep the
-    /// database small.
-    pub fn record(&mut self, counters: &[(String, u64, u64)], timestamp: u64) {
-        if !self.data.config.nics.is_empty()
-            && !counters
-                .iter()
-                .any(|(name, _, _)| self.data.config.nics.iter().any(|allowed| allowed == name))
-        {
-            // The allow-list is configured but none of the sampled interfaces
-            // match; still remember counters so a later reconfiguration does
-            // not produce a bogus delta.
-            for (name, tx, rx) in counters {
-                self.last_counters.insert(name.clone(), (*tx, *rx));
-            }
-            return;
-        }
+    /// matches Go's `sampleOnceLocked`. Zero deltas are not stored.
+    pub fn record(&mut self, counters: &[(String, u64, u64)], timestamp: u64) -> bool {
+        self.record_filtered(counters, timestamp, |_| true)
+    }
 
+    /// Record one sample, ignoring interfaces rejected by `allowed`.
+    ///
+    /// Returns `true` when the accumulated cache was flushed into a single
+    /// database record because `save_interval` elapsed. The caller should then
+    /// persist the database.
+    pub fn record_filtered<F>(
+        &mut self,
+        counters: &[(String, u64, u64)],
+        timestamp: u64,
+        allowed: F,
+    ) -> bool
+    where
+        F: Fn(&str) -> bool,
+    {
         for (name, tx, rx) in counters {
-            if !self.data.config.nics.is_empty()
-                && !self.data.config.nics.iter().any(|allowed| allowed == name)
-            {
+            if !allowed(name) {
                 continue;
             }
 
@@ -165,8 +218,7 @@ impl NetStaticStore {
                 let delta_tx = safe_delta(*tx, previous_tx);
                 let delta_rx = safe_delta(*rx, previous_rx);
                 if delta_tx > 0 || delta_rx > 0 {
-                    self.data
-                        .interfaces
+                    self.pending
                         .entry(name.clone())
                         .or_default()
                         .push(TrafficData {
@@ -179,29 +231,84 @@ impl NetStaticStore {
             self.last_counters.insert(name.clone(), (*tx, *rx));
         }
 
+        self.flush_if_due(timestamp)
+    }
+
+    fn flush_if_due(&mut self, timestamp: u64) -> bool {
+        let interval = self.data.config.save_interval_seconds();
+        match self.last_flush {
+            None => {
+                self.last_flush = Some(timestamp);
+                false
+            }
+            Some(previous) if timestamp.saturating_sub(previous) >= interval => {
+                self.flush(timestamp)
+            }
+            Some(_) => false,
+        }
+    }
+
+    /// Force the cache into one database record.
+    ///
+    /// Returns `true` when records were written. The caller is responsible for
+    /// calling [`NetStaticStore::save`] afterwards.
+    pub fn flush(&mut self, timestamp: u64) -> bool {
+        self.last_flush = Some(timestamp);
+        if self.pending.is_empty() {
+            return false;
+        }
+
+        for (name, samples) in std::mem::take(&mut self.pending) {
+            let mut aggregate = TrafficData {
+                timestamp,
+                tx: 0,
+                rx: 0,
+            };
+            for sample in samples {
+                aggregate.tx = aggregate.tx.saturating_add(sample.tx);
+                aggregate.rx = aggregate.rx.saturating_add(sample.rx);
+            }
+            if aggregate.tx > 0 || aggregate.rx > 0 {
+                self.data
+                    .interfaces
+                    .entry(name)
+                    .or_default()
+                    .push(aggregate);
+            }
+        }
         self.purge_expired(timestamp);
+        true
     }
 
     /// Sum traffic for samples whose timestamp is within `[start, end]`
     /// (`0` means unbounded, like the Go filters).
+    ///
+    /// Pending cache entries are included so callers see up-to-the-second
+    /// totals without forcing a flush.
     pub fn totals_between(&self, start: u64, end: u64) -> BTreeMap<String, TrafficData> {
         let mut totals: BTreeMap<String, TrafficData> = BTreeMap::new();
         for (name, samples) in &self.data.interfaces {
-            let mut total = TrafficData::default();
             for sample in samples {
                 if in_range(sample.timestamp, start, end) {
-                    total.tx = total.tx.saturating_add(sample.tx);
-                    total.rx = total.rx.saturating_add(sample.rx);
+                    add_traffic(totals.entry(name.clone()).or_default(), *sample);
                 }
             }
-            if total.tx > 0 || total.rx > 0 {
-                totals.insert(name.clone(), total);
+        }
+        for (name, samples) in &self.pending {
+            for sample in samples {
+                if in_range(sample.timestamp, start, end) {
+                    add_traffic(totals.entry(name.clone()).or_default(), *sample);
+                }
             }
         }
+        totals.retain(|_, total| total.tx > 0 || total.rx > 0);
         totals
     }
 
-    /// Persist the database atomically. Errors are returned so the caller can
+    /// Persist the flushed database atomically.
+    ///
+    /// Pending cache entries are intentionally not written; call
+    /// [`NetStaticStore::flush`] first. Errors are returned so the caller can
     /// log them without failing the report.
     pub fn save(&self) -> std::io::Result<()> {
         if let Some(parent) = self
@@ -211,7 +318,11 @@ impl NetStaticStore {
         {
             fs::create_dir_all(parent)?;
         }
-        let encoded = serde_json::to_vec(&self.data).map_err(std::io::Error::other)?;
+
+        let mut data = self.data.clone();
+        data.config = data.config.normalized();
+        data.config.nics.clear();
+        let encoded = serde_json::to_vec(&data).map_err(std::io::Error::other)?;
         let temporary = self.path.with_extension("json.tmp");
         fs::write(&temporary, encoded)?;
         fs::rename(temporary, &self.path)
@@ -225,7 +336,16 @@ impl NetStaticStore {
             samples.retain(|sample| sample.timestamp >= cutoff);
             !samples.is_empty()
         });
+        self.pending.retain(|_, samples| {
+            samples.retain(|sample| sample.timestamp >= cutoff);
+            !samples.is_empty()
+        });
     }
+}
+
+fn add_traffic(total: &mut TrafficData, sample: TrafficData) {
+    total.tx = total.tx.saturating_add(sample.tx);
+    total.rx = total.rx.saturating_add(sample.rx);
 }
 
 fn in_range(timestamp: u64, start: u64, end: u64) -> bool {
@@ -234,15 +354,19 @@ fn in_range(timestamp: u64, start: u64, end: u64) -> bool {
 
 /// Counter delta with wrap/reset protection: a counter that moves backwards is
 /// treated as zero instead of underflowing.
+///
+/// Go subtracts `uint64` directly and would report an enormous rate after a
+/// counter reset; this clamp is a deliberate fix (see D-016).
 pub fn safe_delta(current: u64, previous: u64) -> u64 {
     current.saturating_sub(previous)
 }
 
-/// Go's `utils.GetLastResetDate`: the most recent reset day at midnight.
+/// Go's `utils.GetLastResetDate`: the most recent reset day.
 ///
-/// `reset_day` outside `1..=31` returns `now` unchanged. A day that does not
-/// exist in a month rolls over to the first day of the following month, which
-/// is how Go handles e.g. day 31 in February.
+/// `reset_day` outside `1..=31` returns `now` unchanged (callers use the whole
+/// current timestamp, not midnight). A day that does not exist in a month
+/// rolls over to the first day of the following month, which is how Go handles
+/// e.g. day 31 in February.
 pub fn last_reset_date(reset_day: i64, now: NaiveDate) -> NaiveDate {
     if !(1..=31).contains(&reset_day) {
         return now;
@@ -278,9 +402,16 @@ fn actual_reset_date(year: i32, month: u32, reset_day: u32) -> NaiveDate {
         .unwrap_or(first_of_month)
 }
 
-/// Unix timestamp (seconds) of the current reset day at local midnight.
+/// Unix timestamp (seconds) of the current reset point.
+///
+/// For an invalid `reset_day` Go returns the current time (including time of
+/// day), so no traffic from the current day is discarded.
 pub fn current_reset_timestamp(reset_day: i64) -> u64 {
     let now = Local::now();
+    if !(1..=31).contains(&reset_day) {
+        return u64::try_from(now.timestamp()).unwrap_or(0);
+    }
+
     let date = last_reset_date(reset_day, now.date_naive());
     let midnight = date.and_hms_opt(0, 0, 0).expect("midnight is a valid time");
     let local = now
@@ -299,24 +430,32 @@ mod tests {
         NaiveDate::from_ymd_opt(year, month, day).unwrap()
     }
 
+    fn counters(tx: u64, rx: u64) -> Vec<(String, u64, u64)> {
+        vec![("eth0".to_owned(), tx, rx)]
+    }
+
     #[test]
     fn records_deltas_and_guards_counter_wrap() {
         let directory = tempfile::TempDir::new().unwrap();
         let path = directory.path().join("net_static.json");
         let mut store = NetStaticStore::load(&path);
 
-        store.record(&[("eth0".to_owned(), 100, 200)], 1_000);
+        store.record(&counters(100, 200), 1_000);
         // First sample only primes the tracker.
         assert!(store.data().interfaces.is_empty());
 
-        store.record(&[("eth0".to_owned(), 160, 260)], 1_002);
+        assert!(!store.record(&counters(160, 260), 1_002));
+        assert_eq!(store.pending()["eth0"][0].tx, 60);
+        assert_eq!(store.pending()["eth0"][0].rx, 60);
+        assert!(store.flush(1_002));
         let samples = &store.data().interfaces["eth0"];
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].tx, 60);
         assert_eq!(samples[0].rx, 60);
 
         // Counter reset: treated as zero and not stored.
-        store.record(&[("eth0".to_owned(), 10, 20)], 1_004);
+        store.record(&counters(10, 20), 1_004);
+        assert!(!store.flush(1_004));
         assert_eq!(store.data().interfaces["eth0"].len(), 1);
 
         store.save().unwrap();
@@ -325,13 +464,43 @@ mod tests {
     }
 
     #[test]
+    fn caches_deltas_until_save_interval_instead_of_one_record_per_report() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let mut store = NetStaticStore::load(directory.path().join("net_static.json"));
+        store.set_config(NetStaticConfig {
+            save_interval: 600.0,
+            ..NetStaticConfig::default()
+        });
+
+        store.record(&counters(0, 0), 1_000);
+        for second in 1..=10 {
+            assert!(
+                !store.record(&counters(second * 100, second * 200), 1_000 + second),
+                "no flush before save_interval"
+            );
+        }
+        assert!(store.data().interfaces.is_empty());
+        let pending = &store.pending()["eth0"];
+        assert_eq!(pending.len(), 10);
+        assert_eq!(pending.iter().map(|sample| sample.tx).sum::<u64>(), 1_000);
+        assert_eq!(pending.iter().map(|sample| sample.rx).sum::<u64>(), 2_000);
+        assert!(!directory.path().join("net_static.json").exists());
+
+        assert!(store.record(&counters(1_100, 2_200), 1_600));
+        assert!(store.data().interfaces["eth0"].len() == 1);
+        assert_eq!(store.data().interfaces["eth0"][0].tx, 1_100);
+        store.save().unwrap();
+        assert!(directory.path().join("net_static.json").exists());
+    }
+
+    #[test]
     fn totals_between_only_includes_the_requested_window() {
         let directory = tempfile::TempDir::new().unwrap();
         let mut store = NetStaticStore::load(directory.path().join("net_static.json"));
-        store.record(&[("eth0".to_owned(), 0, 0)], 100);
-        store.record(&[("eth0".to_owned(), 10, 20)], 200);
-        store.record(&[("eth0".to_owned(), 30, 40)], 300);
-        store.record(&[("eth0".to_owned(), 80, 100)], 400);
+        store.record(&counters(0, 0), 100);
+        store.record(&counters(10, 20), 200);
+        store.record(&counters(30, 40), 300);
+        store.record(&counters(80, 100), 400);
 
         let totals = store.totals_between(250, 400);
         assert_eq!(totals["eth0"].tx, 70);
@@ -355,6 +524,42 @@ mod tests {
     }
 
     #[test]
+    fn zero_valued_config_is_normalised_on_load() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("net_static.json");
+        fs::write(
+            &path,
+            r#"{"interfaces":{},"config":{"data_preserve_day":0,"detect_interval":0,"save_interval":0}}"#,
+        )
+        .unwrap();
+
+        let store = NetStaticStore::load(&path);
+        assert_eq!(
+            store.data().config.data_preserve_day,
+            DEFAULT_DATA_PRESERVE_DAYS
+        );
+        assert_eq!(store.data().config.detect_interval, DEFAULT_DETECT_INTERVAL);
+        assert_eq!(store.data().config.save_interval, DEFAULT_SAVE_INTERVAL);
+    }
+
+    #[test]
+    fn persisted_nic_allow_list_is_ignored_and_cleared() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("net_static.json");
+        fs::write(
+            &path,
+            r#"{"interfaces":{},"config":{"data_preserve_day":31,"detect_interval":2,"save_interval":600,"nics":["eth9"]}}"#,
+        )
+        .unwrap();
+
+        let mut store = NetStaticStore::load(&path);
+        assert!(store.data().config.nics.is_empty());
+        store.record(&counters(100, 200), 1_000);
+        store.record(&counters(200, 300), 1_002);
+        assert_eq!(store.pending()["eth0"][0].tx, 100);
+    }
+
+    #[test]
     fn last_reset_date_handles_short_months() {
         assert_eq!(last_reset_date(0, date(2024, 5, 10)), date(2024, 5, 10));
         assert_eq!(last_reset_date(15, date(2024, 5, 10)), date(2024, 4, 15));
@@ -366,5 +571,16 @@ mod tests {
         // Day 31 in April rolls to May 1; before May 1 the previous reset is
         // March 31.
         assert_eq!(last_reset_date(31, date(2024, 4, 15)), date(2024, 3, 31));
+    }
+
+    #[test]
+    fn invalid_reset_day_uses_the_current_timestamp() {
+        let before = u64::try_from(Local::now().timestamp()).unwrap();
+        let zero = current_reset_timestamp(0);
+        let high = current_reset_timestamp(32);
+        let after = u64::try_from(Local::now().timestamp()).unwrap();
+
+        assert!((before..=after).contains(&zero), "zero={zero}");
+        assert!((before..=after).contains(&high), "high={high}");
     }
 }
