@@ -1,6 +1,6 @@
 //! CPU collection.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[cfg(target_os = "linux")]
 use std::fs;
@@ -50,13 +50,17 @@ fn sample_proc(options: &MonitorOptions, last: &mut Option<ProcStat>) -> Option<
     let current = read_proc_stat(&options.proc_root).ok()?;
     let usage = usage_between(&previous, &current);
 
-    let (mut name, physical_cores) = read_cpu_info(&options.proc_root)
+    let (mut name, cpuinfo_physical_cores) = read_cpu_info(&options.proc_root)
         .map(|content| parse_cpuinfo(&content))
         .unwrap_or((None, 0));
 
     if name.is_none() {
         name = platform::fallback::cpu_brand();
     }
+
+    // gopsutil counts physical cores from sysfs topology first and only falls
+    // back to /proc/cpuinfo when sysfs is unavailable.
+    let physical_cores = sysfs_physical_cores(&options.sys_root).unwrap_or(cpuinfo_physical_cores);
 
     let cores = u32::try_from(current.cores.len())
         .ok()
@@ -85,29 +89,82 @@ fn read_cpu_info(proc_root: &std::path::Path) -> Option<String> {
     fs::read_to_string(proc_root.join("cpuinfo")).ok()
 }
 
+/// Count physical cores from sysfs CPU topology.
+///
+/// Mirrors gopsutil's `CountsWithContext`: it tries `core_cpus_list` for every
+/// `cpuN`, then the deprecated `thread_siblings_list`, and counts unique
+/// sibling sets. Returns `None` when the topology files are unavailable.
+#[cfg(target_os = "linux")]
+fn sysfs_physical_cores(sys_root: &std::path::Path) -> Option<u32> {
+    let cpu_dir = sys_root.join("devices/system/cpu");
+    let entries = fs::read_dir(cpu_dir).ok()?;
+    let cpu_dirs: Vec<_> = entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(index) = name.strip_prefix("cpu") else {
+                return false;
+            };
+            !index.is_empty() && index.chars().all(|ch| ch.is_ascii_digit())
+        })
+        .map(|entry| entry.path())
+        .collect();
+
+    for file in ["core_cpus_list", "thread_siblings_list"] {
+        let mut siblings = HashSet::new();
+        for cpu_dir in &cpu_dirs {
+            let Ok(content) = fs::read_to_string(cpu_dir.join("topology").join(file)) else {
+                continue;
+            };
+            if let Some(value) = content.lines().next().map(str::trim)
+                && !value.is_empty()
+            {
+                siblings.insert(value.to_owned());
+            }
+        }
+        if !siblings.is_empty() {
+            return u32::try_from(siblings.len()).ok();
+        }
+    }
+
+    None
+}
+
 /// Extract the CPU model name and physical core count from `/proc/cpuinfo`.
 ///
-/// x86 exposes `physical id` + `core id` pairs; ARM boards often omit them, in
-/// which case the physical core count is reported as `0` (unknown), matching
-/// the Go agent's backwards-compatible default.
+/// Physical core resolution follows gopsutil's fallback order:
+///
+/// 1. unique `physical id` + `core id` pairs (x86 with or without SMT);
+/// 2. sum of `cpu cores` per `physical id` when `core id` is unavailable;
+/// 3. unique `processor` entries when the topology fields are absent (common on
+///    ARM64/RISC-V/LoongArch).
+///
+/// The model name priority follows gopsutil: `model name` (or `Model Name`,
+/// `cpu`, `uarch`) first, then `Processor`, then `Hardware`, then `Model`.
 pub(crate) fn parse_cpuinfo(content: &str) -> (Option<String>, u32) {
     let mut model_name = None;
+    let mut processor_name = None;
     let mut hardware = None;
-    let mut processor = None;
     let mut model = None;
-    let mut physical_cores = HashSet::new();
+    let mut pairs = HashSet::new();
+    let mut cores_by_socket: HashMap<String, u32> = HashMap::new();
+    let mut processors = HashSet::new();
     let mut physical_id: Option<&str> = None;
     let mut core_id: Option<&str> = None;
+    let mut cpu_cores: Option<u32> = None;
 
     // The trailing empty line flushes the final block.
     for line in content.lines().chain(std::iter::once("")) {
         let line = line.trim();
         if line.is_empty() {
-            let physical = physical_id.take();
-            let core = core_id.take();
-            if let (Some(physical), Some(core)) = (physical, core) {
-                physical_cores.insert((physical.to_owned(), core.to_owned()));
-            }
+            flush_cpuinfo_block(
+                &mut pairs,
+                &mut cores_by_socket,
+                physical_id.take(),
+                core_id.take(),
+                cpu_cores.take(),
+            );
             continue;
         }
 
@@ -121,20 +178,58 @@ pub(crate) fn parse_cpuinfo(content: &str) -> (Option<String>, u32) {
         }
 
         match key {
-            "model name" if model_name.is_none() => model_name = Some(value.to_owned()),
+            "model name" | "Model Name" | "cpu" | "uarch" if model_name.is_none() => {
+                model_name = Some(value.to_owned());
+            }
+            "Processor" if processor_name.is_none() => processor_name = Some(value.to_owned()),
             "Hardware" if hardware.is_none() => hardware = Some(value.to_owned()),
-            "Processor" if processor.is_none() => processor = Some(value.to_owned()),
             "Model" if model.is_none() => model = Some(value.to_owned()),
+            "processor" if value.parse::<u32>().is_ok() => {
+                processors.insert(value.to_owned());
+            }
             "physical id" => physical_id = Some(value),
             "core id" => core_id = Some(value),
+            "cpu cores" => cpu_cores = value.parse::<u32>().ok(),
             _ => {}
         }
     }
 
-    let name = model_name.or(hardware).or(processor).or(model);
-    let physical_cores = u32::try_from(physical_cores.len()).unwrap_or(u32::MAX);
+    let physical_cores = if !pairs.is_empty() {
+        u32::try_from(pairs.len()).unwrap_or(u32::MAX)
+    } else if !cores_by_socket.is_empty() {
+        cores_by_socket
+            .values()
+            .copied()
+            .fold(0u32, u32::saturating_add)
+    } else {
+        u32::try_from(processors.len()).unwrap_or(u32::MAX)
+    };
+
+    let name = model_name.or(processor_name).or(hardware).or(model);
 
     (name, physical_cores)
+}
+
+fn flush_cpuinfo_block(
+    pairs: &mut HashSet<(String, String)>,
+    cores_by_socket: &mut HashMap<String, u32>,
+    physical_id: Option<&str>,
+    core_id: Option<&str>,
+    cpu_cores: Option<u32>,
+) {
+    let Some(physical_id) = physical_id else {
+        return;
+    };
+
+    if let Some(core_id) = core_id {
+        pairs.insert((physical_id.to_owned(), core_id.to_owned()));
+    }
+    if let Some(cpu_cores) = cpu_cores {
+        cores_by_socket
+            .entry(physical_id.to_owned())
+            .and_modify(|cores| *cores = (*cores).max(cpu_cores))
+            .or_insert(cpu_cores);
+    }
 }
 
 #[cfg(test)]
@@ -171,7 +266,7 @@ core id\t\t: 1
     }
 
     #[test]
-    fn arm_boards_report_unknown_physical_cores() {
+    fn arm_boards_fall_back_to_processor_count() {
         let content = "\
 processor\t: 0
 model name\t: ARMv8 Processor rev 1 (v8l)
@@ -187,11 +282,34 @@ Hardware\t: Example Board
 ";
         let (name, physical) = parse_cpuinfo(content);
         assert_eq!(name.as_deref(), Some("ARMv8 Processor rev 1 (v8l)"));
-        assert_eq!(physical, 0);
+        assert_eq!(physical, 2);
     }
 
     #[test]
-    fn prefers_model_name_and_ignores_empty_values() {
+    fn uses_cpu_cores_per_socket_when_core_id_is_missing() {
+        let content = "\
+processor\t: 0
+physical id\t: 0
+cpu cores\t: 4
+
+processor\t: 1
+physical id\t: 0
+cpu cores\t: 4
+
+processor\t: 2
+physical id\t: 1
+cpu cores\t: 8
+
+processor\t: 3
+physical id\t: 1
+cpu cores\t: 8
+";
+        let (_, physical) = parse_cpuinfo(content);
+        assert_eq!(physical, 12);
+    }
+
+    #[test]
+    fn prefers_model_name_then_processor() {
         let content = "\
 Hardware\t: Example Board
 Processor\t: Example Processor
@@ -199,7 +317,7 @@ Model\t\t: Example Model
 model name\t: \t
 ";
         let (name, physical) = parse_cpuinfo(content);
-        assert_eq!(name.as_deref(), Some("Example Board"));
+        assert_eq!(name.as_deref(), Some("Example Processor"));
         assert_eq!(physical, 0);
     }
 

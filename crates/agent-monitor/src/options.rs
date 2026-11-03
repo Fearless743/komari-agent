@@ -11,8 +11,14 @@ use std::time::Duration;
 /// Environment variable understood by the Go agent for container deployments.
 pub const HOST_PROC_ENV: &str = "HOST_PROC";
 
+/// Environment variable used by gopsutil to relocate `/sys`.
+pub const HOST_SYS_ENV: &str = "HOST_SYS";
+
 /// Default proc filesystem mount point.
 pub const DEFAULT_PROC_ROOT: &str = "/proc";
+
+/// Default sys filesystem mount point.
+pub const DEFAULT_SYS_ROOT: &str = "/sys";
 
 /// Options controlling how basic system metrics are collected.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +27,12 @@ pub struct MonitorOptions {
     /// filesystem somewhere else (for example `/host/proc`) and inject it via
     /// `HOST_PROC`; every `/proc` read goes through this root.
     pub proc_root: PathBuf,
+    /// Root of the sys filesystem, used for CPU topology and DMI probing.
+    /// Container deployments may inject `HOST_SYS`.
+    pub sys_root: PathBuf,
+    /// Filesystem root used for distribution markers such as
+    /// `/etc/os-release`, `/usr/trim` and `/etc/synoinfo.conf`. Defaults to `/`.
+    pub root: PathBuf,
     /// Report memory usage including page cache and buffers
     /// (`total - free`), matching Go's `MemoryIncludeCache`.
     pub memory_include_cache: bool,
@@ -36,6 +48,8 @@ impl Default for MonitorOptions {
     fn default() -> Self {
         Self {
             proc_root: PathBuf::from(DEFAULT_PROC_ROOT),
+            sys_root: PathBuf::from(DEFAULT_SYS_ROOT),
+            root: PathBuf::from("/"),
             memory_include_cache: false,
             memory_report_raw_used: false,
             cpu_sample_interval: Duration::from_secs(1),
@@ -70,13 +84,17 @@ impl MonitorOptions {
 
     /// Build options using an injected environment lookup.
     ///
-    /// Only `HOST_PROC` is read here; memory reporting flags come from the
-    /// configuration layer, which already applies the Go precedence rules.
-    /// Tests can pass a closure instead of mutating the process environment.
+    /// `HOST_PROC` and `HOST_SYS` are read here; memory reporting flags come
+    /// from the configuration layer, which already applies the Go precedence
+    /// rules. Tests can pass a closure instead of mutating the process
+    /// environment.
     pub fn from_env_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Self {
         let mut options = Self::default();
         if let Some(value) = lookup(HOST_PROC_ENV).filter(|value| !value.trim().is_empty()) {
             options.proc_root = PathBuf::from(value.trim());
+        }
+        if let Some(value) = lookup(HOST_SYS_ENV).filter(|value| !value.trim().is_empty()) {
+            options.sys_root = PathBuf::from(value.trim());
         }
         options
     }
@@ -84,6 +102,18 @@ impl MonitorOptions {
     /// Override the proc filesystem root.
     pub fn with_proc_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.proc_root = root.into();
+        self
+    }
+
+    /// Override the sys filesystem root.
+    pub fn with_sys_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.sys_root = root.into();
+        self
+    }
+
+    /// Override the filesystem root used for distribution markers.
+    pub fn with_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.root = root.into();
         self
     }
 
@@ -103,5 +133,15 @@ impl MonitorOptions {
     /// Path of a file relative to the configured proc root.
     pub(crate) fn proc_path(&self, relative: impl AsRef<Path>) -> PathBuf {
         self.proc_root.join(relative)
+    }
+
+    /// Path of a file relative to the configured sys root.
+    pub(crate) fn sys_path(&self, relative: impl AsRef<Path>) -> PathBuf {
+        self.sys_root.join(relative)
+    }
+
+    /// Path of a file relative to the configured filesystem root.
+    pub(crate) fn root_path(&self, relative: impl AsRef<Path>) -> PathBuf {
+        self.root.join(relative)
     }
 }

@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use agent_monitor::{
-    Collector, MemoryMode, MonitorOptions, parse_loadavg, parse_meminfo, parse_proc_stat,
-    parse_uptime,
+    Collector, HOST_SYS_ENV, MemoryMode, MonitorOptions, parse_loadavg, parse_meminfo,
+    parse_proc_stat, parse_uptime,
 };
 use tempfile::TempDir;
 
@@ -84,6 +84,7 @@ impl Fixture {
 
     fn options(&self) -> MonitorOptions {
         MonitorOptions::from_config(self.path().to_str().expect("utf-8 temp path"), false, false)
+            .with_sys_root(self.path())
             .with_cpu_sample_interval(Duration::from_millis(1))
     }
 
@@ -287,6 +288,38 @@ fn proc_text_parsers_reject_malformed_input() {
     assert!(parse_uptime("").is_err());
     assert!(parse_uptime("-1 100").is_err());
     assert!(parse_uptime("nope 1").is_err());
+}
+
+#[test]
+fn sysfs_topology_drives_physical_cores() {
+    let fixture = Fixture::full();
+    let sys = TempDir::new().expect("sys temp dir");
+    let cpu_dir = sys.path().join("devices/system/cpu");
+
+    for (index, siblings) in [(0, "0-1"), (1, "0-1"), (2, "2-3"), (3, "2-3"), (4, "4")] {
+        let topology = cpu_dir.join(format!("cpu{index}")).join("topology");
+        fs::create_dir_all(&topology).expect("create topology");
+        fs::write(topology.join("core_cpus_list"), format!("{siblings}\n"))
+            .expect("write core_cpus_list");
+    }
+
+    let options = fixture
+        .options()
+        .with_sys_root(sys.path())
+        .with_cpu_sample_interval(Duration::from_millis(1));
+    let cpu = Collector::new(options).collect_cpu();
+    assert_eq!(cpu.physical_cores, 3);
+}
+
+#[test]
+fn host_sys_env_lookup_is_injected() {
+    let sys = TempDir::new().expect("sys temp dir");
+    let sys_root = sys.path().to_string_lossy().into_owned();
+    let lookup = |key: &str| (key == HOST_SYS_ENV).then(|| sys_root.clone());
+
+    let options = MonitorOptions::from_env_lookup(&lookup);
+    assert_eq!(options.sys_root, sys.path());
+    assert_eq!(options.proc_root, PathBuf::from("/proc"));
 }
 
 #[test]
