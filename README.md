@@ -19,8 +19,8 @@ crates/
   agent-update/            # 自动更新（后续任务）
 ```
 
-后续任务只修改各自 crate，不需要再改根 `Cargo.toml`：新增依赖统一在
-`[workspace.dependencies]` 中已声明。
+后续任务通常只修改各自 crate，不需要再改根 `Cargo.toml`：常用依赖已统一预声明在
+`[workspace.dependencies]`，个别缺失依赖仍可在该 crate 的 `Cargo.toml` 中直接添加。
 
 ## 环境要求
 
