@@ -69,11 +69,28 @@ mod tests {
     #[test]
     fn version_defaults_to_cargo_package_version() {
         assert!(!VERSION.is_empty());
-        assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            VERSION,
+            option_env!("KOMARI_AGENT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]
-    fn full_version_contains_version() {
-        assert!(full_version().starts_with(VERSION));
+    fn version_hash_matches_compile_time_override() {
+        assert_eq!(
+            VERSION_HASH,
+            option_env!("KOMARI_AGENT_VERSION_HASH").unwrap_or("")
+        );
+    }
+
+    #[test]
+    fn full_version_has_the_expected_shape() {
+        let expected = if VERSION_HASH.is_empty() {
+            VERSION.to_owned()
+        } else {
+            format!("{VERSION} ({VERSION_HASH})")
+        };
+
+        assert_eq!(full_version(), expected);
     }
 }
