@@ -182,16 +182,19 @@ workflow 只上传裸二进制 `komari-agent-{os}-{arch}[.exe]`，因此正常�
 ## D-014 Linux 连接数失败时不回退 gopsutil 的 /proc 枚举
 
 - **Go**：优先直接读 `/proc/net/{tcp,tcp6,udp,udp6}`；失败时回退
-  `gopsutil net.Connections`。在 Linux 上该回退会遍历 `/proc/<pid>/fd` 的 socket
-  inode 并关联 `/proc/net` 表（v4.26.x `net_linux.go`），**不是 netlink**。
+  `gopsutil net.Connections`。在 Linux 上该回退改用 per-pid fd/inode 枚举去重，但
+  `statsFromInodesWithContext` 仍读取 `<HostProc>/net/{tcp,tcp6,udp,udp6}`
+  （v4.26.x `net_linux.go`），**不是 netlink**，也不覆盖 `/proc/net` 完全不可读的
+  情况，并且需要读取 `/proc/<pid>/fd` 的权限。
 - **Rust**：只实现 `/proc/net` 快路径；失败时上报 0 并写入 `message`。
 - **非 Linux**：Go 的 `net.Connections` 有各平台实现；Rust 当前恒为 0（D-017）。
 
 原因：避免引入 inode/文件描述符级枚举与各平台 socket API 的大量代码；任务要求覆盖
 `/proc` fixture 与 `HOST_PROC`。
 
-影响：在 `/proc/net` 不可读但 `/proc/<pid>/fd` 可用的环境中，Go 仍能报告连接数，
-Rust 为 0；macOS/FreeBSD/Windows 同样为 0。
+影响：Go 的回退同样依赖 `/proc/net`，因此不能覆盖 `/proc/net` 完全不可读的场景；
+它额外处理 per-pid fd/inode 去重并需要 fd 权限。Rust 快路径失败时直接上报 0；
+macOS/FreeBSD/Windows 同样为 0（D-017）。
 
 状态：已知限制，待后续补齐。
 
@@ -237,4 +240,3 @@ Rust 为 0；macOS/FreeBSD/Windows 同样为 0。
 与原生进程枚举。
 
 状态：已知限制，待平台任务补齐。
-

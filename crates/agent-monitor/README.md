@@ -174,8 +174,9 @@ strict 模式行为与之对齐，非 strict 模式则提供本机回退。
 
 - `include_mountpoints` 使用分号分隔；设置后只统计列出的挂载点，读取失败的点直接
   跳过，不经过物理盘过滤（与 Go 一致）。
-- 未设置时按 gopsutil 顺序读取 `<proc_root>/1/mountinfo`，回退 `<proc_root>/mounts`、
-  `self/mounts`；挂载表不可读时整体返回 0（include 列表也不例外），按 Go 的
+- 未设置时按 gopsutil 顺序读取 `<proc_root>/1/mountinfo`，回退 `<proc_root>/1/mounts`、
+  `<proc_root>/self/mountinfo`、`<proc_root>/self/mounts`；挂载表不可读时整体返回 0
+  （include 列表也不例外，Linux 与非 Linux 一致），按 Go 的
   `isPhysicalDisk` 排除 `/tmp`、`/dev`、`/run`、`/proc`、`/sys`、容器目录、
   `tmpfs`/`overlay`/`fuse` 等伪文件系统、网络盘与 `/dev/loop*`；`/` 永远保留。
 - 同一设备只统计一次，保留 `total` 更大的挂载点；ZFS dataset 归并到 pool。
@@ -282,13 +283,14 @@ Linux 按 Go 的顺序检测：Android（`getprop`/`build.prop`/目录）、Prox
   `sw_vers`/`uname -sr`；Windows 虚拟化探测未实现。
 - 虚拟化回退到 DMI 时，KVM 客户机通常同时暴露 QEMU 字符串；已优先匹配 KVM，
   但极少数环境可能得到 `qemu` 而非 `kvm`。正常系统会先命中 `systemd-detect-virt`。
-- 非 strict 模式下注入的 `proc_root` 不可读会退回本机 `sysinfo`；容器部署通过
+- 非 strict 模式下 CPU/内存等 proc 读取失败会退回本机 `sysinfo`；磁盘挂载表不可读
+  时返回 0（与 Go `disk.Partitions` 一致），不会回退枚举本机磁盘。容器部署通过
   `from_config` 自动启用 strict 以避免误报。
 - CPU `collect_cpu()` 的采样窗口是两次调用间隔；需要固定窗口时使用 `sample_cpu(window)`。
 - 月流量数据库没有后台采样线程，采样点等于上报点；进程被强制杀死时最多丢失一个
   `save_interval` 窗口的内存增量（D-013）。
-- Linux 连接数在 `/proc/net` 不可读时不像 Go 那样回退 gopsutil 的 `/proc/<pid>/fd`
-  inode 枚举（不是 netlink），而是上报 0；非 Linux 连接数恒为 0（D-014、D-017）。
+- Go 的 Linux 连接数回退会做 per-pid fd/inode 去重，但仍依赖 `/proc/net`；Rust 不
+  做该回退，快路径失败直接上报 0；非 Linux 连接数恒为 0（D-014、D-017）。
 - 详细 GPU 探测为空（例如驱动存在但无设备）时省略 `gpu`，不会产生 Go 的
   `count:0` + `NaN` 平均使用率（D-015）。
 - Windows GPU 型号未知；非 Linux 进程数使用 `sysinfo`，与 `ps`/EnumProcesses 口径
