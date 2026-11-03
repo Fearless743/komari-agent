@@ -34,3 +34,24 @@
 影响与迁移方式：删除部署脚本中已失效或拼错的参数；确需兼容旧脚本时可在验收阶段改为忽略策略。
 
 状态：有意差异，待对等验收确认。
+
+## D-003 布尔参数接受的字面量不同
+
+- **Go**：pflag 的布尔 flag 使用 `strconv.ParseBool`，接受
+  `1`、`t`、`T`、`TRUE`、`true`、`True`、`0`、`f`、`F`、`FALSE`、`false`、`False`。
+- **Rust**：clap 的布尔解析器只接受小写 `true` / `false`。支持的形式为
+  `--flag`（等价于 `--flag=true`）、`--flag=true`、`--flag=false`；
+  `--flag=1`、`--flag=TRUE`、`--flag=t` 等会报 `invalid value` 并以退出码 `2` 退出。
+
+影响：旧部署脚本如果写 `--disable-auto-update=1`、`--ignore-unsafe-cert=TRUE` 等，
+在 Go 版可以正常工作，在 Rust 版会直接失败而不是启用该选项。
+
+迁移建议：把等号后的值统一改为小写 `true` / `false`，例如
+`--disable-auto-update=1` → `--disable-auto-update=true`，
+`--ignore-unsafe-cert=TRUE` → `--ignore-unsafe-cert=true`；
+仅表示启用时可直接省略取值（`--flag`）。
+
+说明：该限制只作用于命令行 flag 取值；环境变量布尔值仍按 Go 语义处理
+（`true`/`1` 启用，其他值保持原值）。
+
+状态：**用户确认的有意差异**（A01 决策：保持 Rust 现状，只接受 `true`/`false`，不扩展解析器）。
