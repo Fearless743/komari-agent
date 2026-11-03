@@ -466,7 +466,35 @@ fn basic_info_matches_go_field_semantics() {
 }
 
 #[test]
-fn snapshot_serializes_with_report_key_names() {
+fn report_metrics_match_generate_report_wire_shape() {
+    let fixture = Fixture::full();
+    let report = fixture.collector().collect_report_metrics();
+    let json = serde_json::to_value(&report).expect("serialize report metrics");
+
+    let top_keys: std::collections::BTreeSet<_> =
+        json.as_object().expect("object").keys().cloned().collect();
+    assert_eq!(
+        top_keys,
+        ["cpu", "load", "ram", "swap", "uptime"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    );
+
+    // Static fixture: the raw usage is 0, the Go report floor applies.
+    assert_eq!(json["cpu"]["usage"], 0.001);
+    assert_eq!(json["cpu"].as_object().unwrap().len(), 1);
+    assert_eq!(json["ram"]["total"], kib(100000));
+    assert_eq!(json["ram"]["used"], kib(63000));
+    assert_eq!(json["ram"].as_object().unwrap().len(), 2);
+    assert_eq!(json["swap"]["total"], kib(10000));
+    assert_eq!(json["swap"]["used"], kib(5000));
+    assert_eq!(json["load"]["load1"], 0.52);
+    assert_eq!(json["uptime"], 12345);
+}
+
+#[test]
+fn snapshot_uses_monitoring_keys_not_report_keys() {
     let fixture = Fixture::full();
     let snapshot = fixture.collector().collect();
     let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
@@ -475,5 +503,7 @@ fn snapshot_serializes_with_report_key_names() {
     assert_eq!(json["swap"]["used"], kib(5000));
     assert_eq!(json["load"]["load1"], 0.52);
     assert_eq!(json["cpu"]["cpu_name"], "Fixture CPU v1");
+    assert_eq!(json["cpu"]["cpu_usage"], 0.0);
+    assert!(json["cpu"].get("usage").is_none());
     assert!(json["uptime"].as_u64().unwrap() == 12345);
 }

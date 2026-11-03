@@ -8,7 +8,10 @@ use crate::memory;
 use crate::options::MonitorOptions;
 use crate::os;
 use crate::procfs::ProcStat;
-use crate::types::{BasicInfo, CpuInfo, LoadAverage, MemoryInfo, OsInfo, SwapInfo, SystemSnapshot};
+use crate::types::{
+    BasicInfo, CpuInfo, CpuReport, LoadAverage, MemoryInfo, OsInfo, RamReport, ReportMetrics,
+    SwapInfo, SystemSnapshot,
+};
 use crate::uptime;
 use crate::virtualization;
 
@@ -38,6 +41,11 @@ impl Collector {
 
     /// Collect every metric in this crate's scope.
     ///
+    /// This is a full diagnostic snapshot and includes OS/virtualization
+    /// probes. Reporting loops should use [`Collector::collect_report_metrics`]
+    /// for periodic samples and [`Collector::collect_basic_info`] on the slower
+    /// basic-info schedule.
+    ///
     /// CPU is sampled first; on the first call this may block for
     /// [`MonitorOptions::cpu_sample_interval`] (one second by default).
     pub fn collect(&self) -> SystemSnapshot {
@@ -49,6 +57,36 @@ impl Collector {
             os: self.collect_os(),
             uptime: self.collect_uptime(),
             virtualization: self.collect_virtualization(),
+        }
+    }
+
+    /// Collect the periodic report payload (`cpu`, `ram`, `swap`, `load`,
+    /// `uptime`) without OS or virtualization probing.
+    ///
+    /// The CPU usage floor matches Go's `GenerateReport`: values at or below
+    /// `0.001` are reported as `0.001` so an idle machine never reports exactly
+    /// zero.
+    pub fn collect_report_metrics(&self) -> ReportMetrics {
+        let cpu = self.collect_cpu();
+        let memory = self.collect_memory();
+        let swap = self.collect_swap();
+        let load = self.collect_load();
+        let uptime = self.collect_uptime();
+
+        ReportMetrics {
+            cpu: CpuReport {
+                usage: if cpu.usage <= 0.001 { 0.001 } else { cpu.usage },
+            },
+            ram: RamReport {
+                total: memory.total,
+                used: memory.used,
+            },
+            swap: RamReport {
+                total: swap.total,
+                used: swap.used,
+            },
+            load,
+            uptime,
         }
     }
 

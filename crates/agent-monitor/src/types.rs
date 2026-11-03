@@ -113,6 +113,46 @@ pub struct LoadAverage {
     pub load15: f64,
 }
 
+/// CPU object of the periodic report (`cpu.usage`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct CpuReport {
+    pub usage: f64,
+}
+
+/// Total/used pair used by the `ram` and `swap` report objects.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct RamReport {
+    pub total: u64,
+    pub used: u64,
+}
+
+/// Metrics collected for the periodic report.
+///
+/// This is the A02 subset of Go's `monitoring.GenerateReport()` and serializes
+/// with the same wire shape for the fields it owns:
+///
+/// ```json
+/// {
+///   "cpu": {"usage": 0.001},
+///   "ram": {"total": 0, "used": 0},
+///   "swap": {"total": 0, "used": 0},
+///   "load": {"load1": 0.0, "load5": 0.0, "load15": 0.0},
+///   "uptime": 0
+/// }
+/// ```
+///
+/// Disk, network, GPU, connections and process counts are added by later
+/// tasks. `Collector::collect_report_metrics()` does not probe OS or
+/// virtualization, so it is safe to call every reporting interval.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct ReportMetrics {
+    pub cpu: CpuReport,
+    pub ram: RamReport,
+    pub swap: RamReport,
+    pub load: LoadAverage,
+    pub uptime: u64,
+}
+
 /// Operating system information.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct OsInfo {
@@ -139,8 +179,11 @@ pub struct BasicInfo {
 
 /// One coherent snapshot of the metrics owned by this crate.
 ///
-/// Disk, network and GPU collection live in A03; IP addresses and process
-/// counts are added by later tasks.
+/// This is a convenience aggregate for diagnostics and tests, **not** the
+/// protocol wire format: [`CpuInfo`] serializes Go's `monitoring.CpuInfo` keys
+/// (`cpu_usage`, `cpu_cores`, ...), while the periodic report uses
+/// [`ReportMetrics`] (`cpu.usage`). Disk, network and GPU collection live in
+/// A03; IP addresses and process counts are added by later tasks.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SystemSnapshot {
     pub cpu: CpuInfo,

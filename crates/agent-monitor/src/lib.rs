@@ -38,7 +38,8 @@ pub use procfs::{
     parse_uptime, read_loadavg, read_meminfo, read_proc_stat, read_uptime, usage_between,
 };
 pub use types::{
-    BasicInfo, CpuInfo, LoadAverage, MemoryInfo, MemoryMode, OsInfo, SwapInfo, SystemSnapshot,
+    BasicInfo, CpuInfo, CpuReport, LoadAverage, MemoryInfo, MemoryMode, OsInfo, RamReport,
+    ReportMetrics, SwapInfo, SystemSnapshot,
 };
 pub use virtualization::detect_virtualization;
 
