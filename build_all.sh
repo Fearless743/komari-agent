@@ -100,8 +100,6 @@ case "$BUILD_TOOL" in
         ;;
 esac
 
-mkdir -p "$BUILD_DIR"
-
 VERSION="${KOMARI_AGENT_VERSION:-}"
 if [ -z "$VERSION" ]; then
     VERSION=$(git describe --tags --abbrev=0 2>/dev/null || printf 'dev')
@@ -122,6 +120,10 @@ if [ -n "$HASH" ]; then
     printf ' (%s)' "$HASH"
 fi
 printf '\nHost target: %s\n\n' "$HOST_TARGET"
+
+if [ "$DRY_RUN" != "1" ]; then
+    mkdir -p "$BUILD_DIR" || exit 1
+fi
 
 FAILED_BUILDS=()
 BUILT=0
@@ -263,6 +265,11 @@ if [ "${#FAILED_BUILDS[@]}" -ne 0 ]; then
     printf '\n%d build(s) succeeded, %d failed. Binaries are in ./%s.\n' \
         "$BUILT" "${#FAILED_BUILDS[@]}" "$BUILD_DIR" >&2
     exit 1
+fi
+
+if [ "$BUILT" -eq 0 ] && [ "${#FAILED_BUILDS[@]}" -eq 0 ]; then
+    printf 'No build targets matched KOMARI_BUILD_TARGETS=%s\n' "$ONLY" >&2
+    exit 2
 fi
 
 printf 'All %d builds completed successfully. Binaries are in ./%s.\n' "$BUILT" "$BUILD_DIR"

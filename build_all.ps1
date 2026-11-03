@@ -80,8 +80,6 @@ if ($BuildTool -notin @('auto', 'cargo', 'zigbuild', 'cross')) {
     exit 2
 }
 
-New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
-
 $version = $env:KOMARI_AGENT_VERSION
 if (-not $version) {
     $version = (git describe --tags --abbrev=0 2>$null)
@@ -142,6 +140,10 @@ function Install-TargetIfNeeded {
     Write-Host "  installing rust target $Target..."
     & rustup target add $Target
     return ($LASTEXITCODE -eq 0)
+}
+
+if ($DryRun -ne '1') {
+    New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 }
 
 $failed = @()
@@ -209,6 +211,11 @@ if ($failed.Count -gt 0) {
     foreach ($item in $failed) { Write-Host "  - $item" -ForegroundColor Red }
     Write-Host "`n$built build(s) succeeded, $($failed.Count) failed. Binaries are in $BuildDir." -ForegroundColor Red
     exit 1
+}
+
+if ($built -eq 0 -and $failed.Count -eq 0) {
+    Write-Host "No build targets matched KOMARI_BUILD_TARGETS=$Only" -ForegroundColor Red
+    exit 2
 }
 
 Write-Host "All $built builds completed successfully. Binaries are in $BuildDir." -ForegroundColor Green
