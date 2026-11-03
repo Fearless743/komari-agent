@@ -214,18 +214,18 @@ fn detect_proxmox(options: &MonitorOptions) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn proxmox_version_output(options: &MonitorOptions) -> Option<String> {
-    let output = if is_default_root(options) {
-        let path = std::env::var_os("PATH");
-        let binary = find_in_path("pveversion", path.as_deref())?;
-        Command::new(binary).output().ok()?
+    let root_binary = options.root_path("usr/bin/pveversion");
+    let binary = if !is_default_root(options) && is_executable(&root_binary) {
+        root_binary
     } else {
-        let binary = options.root_path("usr/bin/pveversion");
-        if !binary.is_file() {
-            return None;
-        }
-        Command::new(binary).output().ok()?
+        let path = options
+            .process_path
+            .clone()
+            .or_else(|| std::env::var_os("PATH"));
+        find_in_path("pveversion", path.as_deref())?
     };
 
+    let output = Command::new(binary).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -235,13 +235,23 @@ fn proxmox_version_output(options: &MonitorOptions) -> Option<String> {
 /// Resolve an executable through an injected `PATH` value.
 ///
 /// Split out so the Proxmox PATH lookup can be tested without mutating the
-/// process environment.
+/// process environment. Like Go's `exec.LookPath`, only files with at least one
+/// execute bit are accepted.
 #[cfg(target_os = "linux")]
 fn find_in_path(name: &str, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     let path = path.filter(|path| !path.is_empty())?;
     std::env::split_paths(path)
         .map(|directory| directory.join(name))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| is_executable(candidate))
+}
+
+#[cfg(target_os = "linux")]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 /// Extract `pve-manager/<version>~...` from `pveversion` output.
@@ -619,9 +629,10 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn finds_pveversion_through_injected_path() {
+    fn finds_only_executable_pveversion_through_injected_path() {
         use std::ffi::OsStr;
         use std::fs;
+        use std::os::unix::fs::PermissionsExt;
 
         use tempfile::TempDir;
 
@@ -630,12 +641,57 @@ mod tests {
         fs::write(&binary, "#!/bin/sh\n").unwrap();
 
         let path = dir.path().as_os_str();
-        assert_eq!(super::find_in_path("pveversion", Some(path)), Some(binary));
+        // No execute bit: Go's LookPath must reject it.
+        assert_eq!(super::find_in_path("pveversion", Some(path)), None);
+
+        let mut permissions = fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions).unwrap();
+        assert_eq!(
+            super::find_in_path("pveversion", Some(path)),
+            Some(binary.clone())
+        );
         assert_eq!(super::find_in_path("missing", Some(path)), None);
         assert_eq!(super::find_in_path("pveversion", None), None);
         assert_eq!(
             super::find_in_path("pveversion", Some(OsStr::new(""))),
             None
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proxmox_detection_uses_injected_path_end_to_end() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        use tempfile::TempDir;
+
+        let root = TempDir::new().expect("temp root");
+        let bin_dir = TempDir::new().expect("bin dir");
+        let binary = bin_dir.path().join("pveversion");
+        fs::write(
+            &binary,
+            "#!/bin/sh\nprintf 'pve-manager/8.2.4/6f5f9f2c7b9c0e1a\\n'\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions).unwrap();
+
+        fs::create_dir_all(root.path().join("etc")).unwrap();
+        fs::write(
+            root.path().join("etc/os-release"),
+            "PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nVERSION_CODENAME=bookworm\n",
+        )
+        .unwrap();
+
+        let options = crate::options::MonitorOptions::default()
+            .with_root(root.path())
+            .with_process_path(bin_dir.path().as_os_str());
+        assert_eq!(
+            super::detect_proxmox(&options).as_deref(),
+            Some("Proxmox VE 8.2.4 (bookworm)")
         );
     }
 

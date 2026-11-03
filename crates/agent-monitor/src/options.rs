@@ -1,12 +1,18 @@
 //! Collector configuration.
 //!
-//! The collector never reads the process environment itself. Callers resolve
-//! configuration (see `agent-config`) and pass the values in through
-//! [`MonitorOptions`]. [`MonitorOptions::from_env_lookup`] exists for standalone
-//! use and tests, but still takes an injected lookup function.
+//! The collector does not resolve configuration from the process environment.
+//! Callers resolve it (see `agent-config`) and pass values through
+//! [`MonitorOptions`]; [`MonitorOptions::from_env_lookup`] exists for standalone
+//! use and tests but still takes an injected lookup function.
+//!
+//! The one process-environment read in the collector is the `PATH` fallback
+//! used to locate `pveversion` when [`MonitorOptions::process_path`] is not set.
+//! Inject it with [`MonitorOptions::with_process_path`] (or via
+//! `from_env_lookup`) to avoid that fallback.
 
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -15,6 +21,9 @@ pub const HOST_PROC_ENV: &str = "HOST_PROC";
 
 /// Environment variable used by gopsutil to relocate `/sys`.
 pub const HOST_SYS_ENV: &str = "HOST_SYS";
+
+/// Environment variable used to locate external commands such as `pveversion`.
+pub const PATH_ENV: &str = "PATH";
 
 /// Default proc filesystem mount point.
 pub const DEFAULT_PROC_ROOT: &str = "/proc";
@@ -35,6 +44,10 @@ pub struct MonitorOptions {
     /// Filesystem root used for distribution markers such as
     /// `/etc/os-release`, `/usr/trim` and `/etc/synoinfo.conf`. Defaults to `/`.
     pub root: PathBuf,
+    /// Optional `PATH` used to locate `pveversion`. When `None`, the collector
+    /// falls back to the process `PATH` (the only process-environment read in
+    /// this crate). `from_env_lookup` populates it from `PATH`.
+    pub process_path: Option<OsString>,
     /// Report memory usage including page cache and buffers
     /// (`total - free`), matching Go's `MemoryIncludeCache`.
     pub memory_include_cache: bool,
@@ -56,6 +69,7 @@ impl Default for MonitorOptions {
             proc_root: PathBuf::from(DEFAULT_PROC_ROOT),
             sys_root: PathBuf::from(DEFAULT_SYS_ROOT),
             root: PathBuf::from("/"),
+            process_path: None,
             memory_include_cache: false,
             memory_report_raw_used: false,
             strict_proc: false,
@@ -108,6 +122,9 @@ impl MonitorOptions {
         if let Some(value) = lookup(HOST_SYS_ENV).filter(|value| !value.trim().is_empty()) {
             options.sys_root = PathBuf::from(value.trim());
         }
+        if let Some(value) = lookup(PATH_ENV).filter(|value| !value.is_empty()) {
+            options.process_path = Some(OsString::from(value));
+        }
         options
     }
 
@@ -132,6 +149,13 @@ impl MonitorOptions {
     /// Override the filesystem root used for distribution markers.
     pub fn with_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.root = root.into();
+        self
+    }
+
+    /// Override the `PATH` used to locate external commands such as
+    /// `pveversion`.
+    pub fn with_process_path(mut self, path: impl Into<OsString>) -> Self {
+        self.process_path = Some(path.into());
         self
     }
 

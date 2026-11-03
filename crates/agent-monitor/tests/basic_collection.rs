@@ -334,6 +334,49 @@ fn strict_proc_with_stat_only_does_not_read_local_cpu_brand() {
 }
 
 #[test]
+fn strict_proc_still_reads_physical_cores_from_injected_sys_root() {
+    let fixture = Fixture::empty();
+    fixture.write("stat", STAT);
+
+    let sys = TempDir::new().expect("sys temp dir");
+    let cpu_dir = sys.path().join("devices/system/cpu");
+    for (index, siblings) in [(0, "0-1"), (1, "0-1"), (2, "2-3"), (3, "2-3")] {
+        let topology = cpu_dir.join(format!("cpu{index}")).join("topology");
+        fs::create_dir_all(&topology).expect("create topology");
+        fs::write(topology.join("core_cpus_list"), format!("{siblings}\n"))
+            .expect("write core_cpus_list");
+    }
+
+    let options = fixture.options().with_sys_root(sys.path());
+    assert!(options.strict_proc);
+    let cpu = Collector::new(options).collect_cpu();
+    assert_eq!(cpu.name, "Unknown");
+    assert_eq!(cpu.physical_cores, 2);
+}
+
+#[test]
+fn strict_proc_does_not_suppress_default_sys_topology() {
+    let fixture = Fixture::empty();
+    fixture.write("stat", STAT);
+
+    // Deliberately use the default /sys: strict only governs proc.
+    let options = MonitorOptions::from_config(
+        fixture.path().to_str().expect("utf-8 temp path"),
+        false,
+        false,
+    )
+    .with_cpu_sample_interval(Duration::from_millis(1));
+    assert!(options.strict_proc);
+    let cpu = Collector::new(options).collect_cpu();
+
+    assert_eq!(cpu.name, "Unknown");
+    assert_eq!(cpu.cores, 2);
+    if Path::new("/sys/devices/system/cpu/cpu0/topology").is_dir() {
+        assert!(cpu.physical_cores > 0);
+    }
+}
+
+#[test]
 fn sysfs_thread_siblings_list_is_used_as_fallback() {
     let fixture = Fixture::full();
     let sys = TempDir::new().expect("sys temp dir");
@@ -361,11 +404,23 @@ fn sysfs_thread_siblings_list_is_used_as_fallback() {
 fn host_sys_env_lookup_is_injected() {
     let sys = TempDir::new().expect("sys temp dir");
     let sys_root = sys.path().to_string_lossy().into_owned();
-    let lookup = |key: &str| (key == HOST_SYS_ENV).then(|| sys_root.clone());
+    let lookup = |key: &str| {
+        if key == HOST_SYS_ENV {
+            Some(sys_root.clone())
+        } else if key == agent_monitor::PATH_ENV {
+            Some("/injected/bin".to_owned())
+        } else {
+            None
+        }
+    };
 
     let options = MonitorOptions::from_env_lookup(&lookup);
     assert_eq!(options.sys_root, sys.path());
     assert_eq!(options.proc_root, PathBuf::from("/proc"));
+    assert_eq!(
+        options.process_path,
+        Some(std::ffi::OsString::from("/injected/bin"))
+    );
 }
 
 #[test]

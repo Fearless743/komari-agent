@@ -31,7 +31,7 @@ mod virtualization;
 pub use collector::Collector;
 pub use error::MonitorError;
 pub use options::{
-    DEFAULT_PROC_ROOT, DEFAULT_SYS_ROOT, HOST_PROC_ENV, HOST_SYS_ENV, MonitorOptions,
+    DEFAULT_PROC_ROOT, DEFAULT_SYS_ROOT, HOST_PROC_ENV, HOST_SYS_ENV, MonitorOptions, PATH_ENV,
 };
 pub use procfs::{
     CpuTimes, CpuUsage, ProcMemInfo, ProcStat, parse_loadavg, parse_meminfo, parse_proc_stat,
