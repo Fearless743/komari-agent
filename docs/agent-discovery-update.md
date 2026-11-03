@@ -132,3 +132,6 @@ cargo test -p agent-discovery -p agent-update
 7. **404 / 无匹配资产**：与 Go `UpdateCommand` 一致，`check_and_update` 在 release 列表为空、
    当前平台无匹配 asset 或仓库 404 时返回 `UpdateOutcome::UpToDate`，不会下载或替换任何文件；
    `check_latest` 仍返回 `NoRelease`/`NoAsset`/`HttpStatus` 以便诊断。
+8. **CLI 周期循环与 42 退出（待 A0x 接线）**：`Updater::run_periodic` 与
+   `UpdateOutcome::exit_code` 已实现并有测试，但 A06 没有接入 CLI 主循环；实际调用
+   `run_periodic` 并在 `Updated` 时以 42 退出需由后续 CLI 任务完成。
