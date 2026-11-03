@@ -3,6 +3,8 @@
 //! Distribution detection follows the Go agent's order: Android, Proxmox VE,
 //! Synology DSM, fnOS, then `os-release` PRETTY_NAME, then `Linux`.
 
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 #[cfg(target_os = "linux")]
 use std::fs;
 

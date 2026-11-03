@@ -5,6 +5,8 @@
 //! [`MonitorOptions`]. [`MonitorOptions::from_env_lookup`] exists for standalone
 //! use and tests, but still takes an injected lookup function.
 
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

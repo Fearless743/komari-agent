@@ -9,6 +9,8 @@
 //! | Linux default             | `htoplike`     | same as above |
 //! | non-Linux default         | `gopsutil`     | `total - available` |
 
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 use crate::options::MonitorOptions;
 use crate::platform;
 use crate::procfs::ProcMemInfo;

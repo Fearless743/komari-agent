@@ -4,6 +4,8 @@
 //! them at a mounted host proc filesystem. Parsers are pure functions and are
 //! exercised by the fixture-based tests.
 
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 use std::fs;
 use std::path::Path;
 

@@ -4,10 +4,10 @@
 //! and cgroups, DMI, then the CPU `hypervisor` flag. Bare metal returns
 //! `none`; when no probe can run, an empty string is returned.
 
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 #[cfg(target_os = "linux")]
 use std::fs;
-#[cfg(target_os = "linux")]
-use std::path::Path;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use std::process::Command;
 
@@ -20,28 +20,37 @@ use crate::options::MonitorOptions;
 pub fn detect_virtualization(options: &MonitorOptions) -> String {
     #[cfg(target_os = "linux")]
     {
-        if let Some(kind) = systemd_detect_virt() {
-            return kind;
-        }
-        if let Some(kind) = detect_container(options) {
-            return kind;
-        }
-        if let Some(kind) = detect_dmi() {
-            return kind;
-        }
-        if let Some(kind) = detect_cpu_hypervisor(options) {
-            return kind;
-        }
-        if options.proc_path("cpuinfo").is_file() {
-            return "none".to_owned();
-        }
-        String::new()
+        detect_linux(options, systemd_detect_virt())
     }
 
     #[cfg(not(target_os = "linux"))]
     {
         platform_detect(options)
     }
+}
+
+/// Linux probe order with the `systemd-detect-virt` result injected.
+///
+/// Passing `None` exercises the path used when the binary is unavailable,
+/// which is also how tests avoid depending on the host.
+#[cfg(target_os = "linux")]
+fn detect_linux(options: &MonitorOptions, systemd: Option<String>) -> String {
+    if let Some(kind) = systemd {
+        return kind;
+    }
+    if let Some(kind) = detect_container(options) {
+        return kind;
+    }
+    if let Some(kind) = detect_dmi(options) {
+        return kind;
+    }
+    if let Some(kind) = detect_cpu_hypervisor(options) {
+        return kind;
+    }
+    if options.proc_path("cpuinfo").is_file() {
+        return "none".to_owned();
+    }
+    String::new()
 }
 
 #[cfg(target_os = "linux")]
@@ -57,13 +66,13 @@ fn systemd_detect_virt() -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn detect_container(options: &MonitorOptions) -> Option<String> {
-    if Path::new("/.dockerenv").is_file() {
+    if options.root_path(".dockerenv").is_file() {
         return Some("docker".to_owned());
     }
 
     let cgroup = fs::read_to_string(options.proc_path("self/cgroup")).ok();
 
-    if Path::new("/run/.containerenv").is_file() {
+    if options.root_path("run/.containerenv").is_file() {
         return Some(
             cgroup
                 .as_deref()
@@ -76,10 +85,10 @@ fn detect_container(options: &MonitorOptions) -> Option<String> {
         return Some(kind);
     }
 
-    if Path::new("/dev/.lxc-boot-id").is_file() {
+    if options.root_path("dev/.lxc-boot-id").is_file() {
         return Some("lxc".to_owned());
     }
-    if Path::new("/.komari-agent-container").is_file() {
+    if options.root_path(".komari-agent-container").is_file() {
         return Some("container".to_owned());
     }
 
@@ -114,10 +123,12 @@ pub(crate) fn container_from_cgroup(content: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn detect_dmi() -> Option<String> {
+fn detect_dmi(options: &MonitorOptions) -> Option<String> {
     let fields: Vec<String> = ["product_name", "sys_vendor", "board_vendor", "bios_vendor"]
         .iter()
-        .filter_map(|name| fs::read_to_string(format!("/sys/class/dmi/id/{name}")).ok())
+        .filter_map(|name| {
+            fs::read_to_string(options.sys_path(format!("class/dmi/id/{name}"))).ok()
+        })
         .collect();
 
     let fields: Vec<&str> = fields.iter().map(String::as_str).collect();
@@ -304,6 +315,67 @@ mod tests {
         assert_eq!(
             virt_from_dmi_fields(&["ThinkPad X1", "LENOVO", "", ""]),
             None
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn injected_options(root: &std::path::Path) -> crate::options::MonitorOptions {
+        crate::options::MonitorOptions::default()
+            .with_root(root)
+            .with_proc_root(root.join("proc"))
+            .with_sys_root(root.join("sys"))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn missing_systemd_uses_injected_container_and_cpu_probes() {
+        use std::fs;
+
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp root");
+        let options = injected_options(dir.path());
+
+        // No systemd, no markers, no DMI, no cpuinfo -> empty, never panic.
+        assert_eq!(super::detect_linux(&options, None), "");
+
+        fs::create_dir_all(dir.path().join("proc/self")).unwrap();
+        fs::write(
+            dir.path().join("proc/self/cgroup"),
+            "12:devices:/docker/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+        )
+        .unwrap();
+        assert_eq!(super::detect_linux(&options, None), "docker");
+
+        fs::remove_file(dir.path().join("proc/self/cgroup")).unwrap();
+        fs::write(
+            dir.path().join("proc/cpuinfo"),
+            "processor\t: 0\nflags\t\t: fpu vme hypervisor\n",
+        )
+        .unwrap();
+        assert_eq!(super::detect_linux(&options, None), "virtualized");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn missing_systemd_uses_injected_dmi_and_explicit_result() {
+        use std::fs;
+
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().expect("temp root");
+        let options = injected_options(dir.path());
+
+        let dmi = dir.path().join("sys/class/dmi/id");
+        fs::create_dir_all(&dmi).unwrap();
+        fs::write(dmi.join("product_name"), "KVM\n").unwrap();
+        fs::write(dmi.join("sys_vendor"), "QEMU\n").unwrap();
+        assert_eq!(super::detect_linux(&options, None), "kvm");
+
+        // An explicit systemd result is authoritative.
+        assert_eq!(
+            super::detect_linux(&options, Some("vmware".to_owned())),
+            "vmware"
         );
     }
 }
