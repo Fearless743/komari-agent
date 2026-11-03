@@ -1,0 +1,18 @@
+[package]
+name = "agent-monitor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "System metrics collection for the Komari agent"
+
+[dependencies]
+chrono.workspace = true
+globset.workspace = true
+once_cell.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+sysinfo.workspace = true
+tokio.workspace = true
+tracing.workspace = true

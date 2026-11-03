@@ -1,0 +1,19 @@
+[package]
+name = "agent-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Command line entry point for the Komari agent"
+
+[[bin]]
+name = "komari-agent"
+path = "src/main.rs"
+
+[dependencies]
+agent-config = { path = "../agent-config" }
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
