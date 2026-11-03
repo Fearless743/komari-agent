@@ -53,10 +53,11 @@ jobs:
 
       - name: Lint shell scripts
         run: |
-          bash -n install.sh build_all.sh scripts/test-install-service-render.sh scripts/test-install-config.sh
-          shellcheck -S style install.sh build_all.sh scripts/test-install-service-render.sh scripts/test-install-config.sh
+          bash -n install.sh build_all.sh scripts/test-install-service-render.sh scripts/test-install-config.sh scripts/test-install-paths.sh
+          shellcheck -S style install.sh build_all.sh scripts/test-install-service-render.sh scripts/test-install-config.sh scripts/test-install-paths.sh
           bash scripts/test-install-service-render.sh
           bash scripts/test-install-config.sh
+          bash scripts/test-install-paths.sh
 
       - name: Lint workflows
         run: |

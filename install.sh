@@ -787,6 +787,7 @@ config_merge() {
     local dir base base_tmp tmp ovtmp backup old_umask
     local overrides sep
 
+    assert_safe_file "$file"
     dir=$(dirname "$file")
     if [ ! -d "$dir" ]; then
         mkdir -p "$dir" || die "Failed to create config directory: $dir"
@@ -925,6 +926,8 @@ PY
 }
 
 install_config() {
+    assert_safe_file "$CONFIG_FILE"
+
     if [ "$CONFIG_EXPLICIT" = true ]; then
         if [ ! -f "$CONFIG_FILE" ]; then
             log_warning "Config file $CONFIG_FILE does not exist; the agent will fail to start until it is created."
@@ -1385,6 +1388,64 @@ resolve_download() {
     DOWNLOAD_URL="${base}/${download_path}/${file_name}"
 }
 
+path_has_dotdot() {
+    case "/$1/" in
+        *"/../"*) return 0 ;;
+    esac
+    return 1
+}
+
+# Reject lexical "..", symlinked targets and paths whose real location differs
+# from the requested path. TARGET_DIR is replaced with its canonical path.
+assert_safe_target_dir() {
+    local path="$1"
+    local real lexical parent
+
+    path_has_dotdot "$path" && die "Refusing install directory containing '..': $path"
+    [ -L "$path" ] && die "Refusing symlinked install directory: $path"
+
+    if [ -d "$path" ]; then
+        real=$(cd -P "$path" && pwd -P) || die "Cannot resolve install directory: $path"
+        lexical="${path%/}"
+        [ -n "$lexical" ] || lexical="/"
+        [ "$real" = "$lexical" ] ||
+            die "Refusing install directory that resolves through a symlink: $path -> $real"
+        TARGET_DIR="$real"
+        return 0
+    fi
+
+    parent=$(dirname "$path")
+    while [ ! -d "$parent" ]; do
+        parent=$(dirname "$parent")
+    done
+    real=$(cd -P "$parent" && pwd -P) || die "Cannot resolve install directory parent: $parent"
+    lexical="${parent%/}"
+    [ -n "$lexical" ] || lexical="/"
+    [ "$real" = "$lexical" ] ||
+        die "Refusing install directory under a symlinked parent: $path"
+}
+
+# Reject symlinks/non-regular files and symlinked parents before chmod.
+assert_safe_file() {
+    local path="$1"
+    local parent real lexical
+
+    path_has_dotdot "$path" && die "Refusing file path containing '..': $path"
+    [ -L "$path" ] && die "Refusing symlinked file: $path"
+    if [ -e "$path" ] && [ ! -f "$path" ]; then
+        die "Refusing to chmod non-regular file: $path"
+    fi
+
+    parent=$(dirname "$path")
+    if [ -d "$parent" ]; then
+        real=$(cd -P "$parent" && pwd -P) || die "Cannot resolve parent of $path"
+        lexical="${parent%/}"
+        [ -n "$lexical" ] || lexical="/"
+        [ "$real" = "$lexical" ] ||
+            die "Refusing file under a symlinked parent: $path"
+    fi
+}
+
 is_protected_dir() {
     local dir="$1"
     [ "$dir" != "/" ] && dir="${dir%/}"
@@ -1399,6 +1460,8 @@ is_protected_dir() {
 }
 
 ensure_target_dir() {
+    assert_safe_target_dir "$TARGET_DIR"
+
     if [ -d "$TARGET_DIR" ]; then
         is_protected_dir "$TARGET_DIR" &&
             die "Refusing to change permissions on system directory $TARGET_DIR; use a dedicated subdirectory"
@@ -1408,15 +1471,20 @@ ensure_target_dir() {
             log_warning "Install directory $TARGET_DIR has mode $mode; changing to 700 because auto-discovery.json contains a token."
             chmod 700 "$TARGET_DIR" || die "Failed to set permissions on $TARGET_DIR"
         fi
-        if [ -f "$TARGET_DIR/auto-discovery.json" ]; then
-            chmod 600 "$TARGET_DIR/auto-discovery.json" ||
-                die "Failed to set permissions on $TARGET_DIR/auto-discovery.json"
+        local discovery="$TARGET_DIR/auto-discovery.json"
+        if [ -e "$discovery" ] || [ -L "$discovery" ]; then
+            assert_safe_file "$discovery"
+            chmod 600 "$discovery" ||
+                die "Failed to set permissions on $discovery"
         fi
         return 0
     fi
 
     log_step "Creating installation directory: $TARGET_DIR"
     mkdir -p "$TARGET_DIR" || die "Failed to create $TARGET_DIR"
+    assert_safe_target_dir "$TARGET_DIR"
+    is_protected_dir "$TARGET_DIR" &&
+        die "Refusing to change permissions on system directory $TARGET_DIR; use a dedicated subdirectory"
     chmod 700 "$TARGET_DIR" || die "Failed to set permissions on $TARGET_DIR"
 }
 
