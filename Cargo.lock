@@ -55,6 +55,7 @@ dependencies = [
  "hostname",
  "idna",
  "if-addrs",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

@@ -479,22 +479,84 @@ pub fn sort_ips_by_preference(ips: &mut [IpAddr], prefer: PreferIp) {
 /// Whether a non-loopback IPv4 interface exists.
 ///
 /// The result is cached for the lifetime of the process, mirroring the Go
-/// `preferV4Once` guard.
+/// `preferV4Once` guard. On Unix this uses `getifaddrs` and checks `IFF_UP`
+/// exactly like Go's `net.FlagUp`; `IFF_RUNNING` is deliberately not required.
+#[cfg(unix)]
 pub fn local_has_ipv4() -> bool {
     static HAS_IPV4: OnceLock<bool> = OnceLock::new();
+    *HAS_IPV4.get_or_init(local_has_ipv4_uncached)
+}
 
-    *HAS_IPV4.get_or_init(|| {
-        if_addrs::get_if_addrs()
-            .map(|interfaces| {
-                interfaces.iter().any(|interface| {
-                    // `is_oper_up` mirrors Go's `net.FlagUp` check. Interface
-                    // level loopback detection is not exposed by if-addrs, so
-                    // the address-level check below is used as well.
-                    interface.is_oper_up() && !interface.is_loopback() && interface.ip().is_ipv4()
-                })
+/// Non-Unix fallback; `if-addrs` does not expose `IFF_UP` directly, so this is
+/// an approximation documented in `docs/parity-deviations.md`.
+#[cfg(not(unix))]
+pub fn local_has_ipv4() -> bool {
+    static HAS_IPV4: OnceLock<bool> = OnceLock::new();
+    *HAS_IPV4.get_or_init(local_has_ipv4_uncached)
+}
+
+#[cfg(unix)]
+fn local_has_ipv4_uncached() -> bool {
+    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+
+    // SAFETY: getifaddrs either fails without touching `head` or initializes it
+    // to a linked list that must be released with freeifaddrs.
+    if unsafe { libc::getifaddrs(&mut head) } != 0 {
+        return false;
+    }
+
+    let mut found = false;
+    let mut current = head;
+
+    while !current.is_null() {
+        // SAFETY: `current` is a valid node from the getifaddrs list; every
+        // pointer below is checked before dereferencing.
+        let entry = unsafe { &*current };
+
+        if !entry.ifa_addr.is_null() {
+            // SAFETY: ifa_addr points to a sockaddr whose family determines
+            // whether the sockaddr_in cast is valid.
+            let family = unsafe { (*entry.ifa_addr).sa_family as i32 };
+
+            if family == libc::AF_INET
+                && interface_flags_allow_ipv4(entry.ifa_flags as libc::c_uint)
+            {
+                // SAFETY: family == AF_INET guarantees sockaddr_in layout.
+                let sockaddr = unsafe { &*(entry.ifa_addr as *const libc::sockaddr_in) };
+                let address = Ipv4Addr::from(u32::from_be(sockaddr.sin_addr.s_addr));
+
+                if !address.is_loopback() {
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        current = entry.ifa_next;
+    }
+
+    // SAFETY: head was returned by getifaddrs and is released exactly once.
+    unsafe { libc::freeifaddrs(head) };
+    found
+}
+
+#[cfg(unix)]
+fn interface_flags_allow_ipv4(flags: libc::c_uint) -> bool {
+    let up = libc::IFF_UP as libc::c_uint;
+    let loopback = libc::IFF_LOOPBACK as libc::c_uint;
+
+    (flags & up) != 0 && (flags & loopback) == 0
+}
+
+#[cfg(not(unix))]
+fn local_has_ipv4_uncached() -> bool {
+    if_addrs::get_if_addrs()
+        .map(|interfaces| {
+            interfaces.iter().any(|interface| {
+                interface.is_oper_up() && !interface.is_loopback() && interface.ip().is_ipv4()
             })
-            .unwrap_or(false)
-    })
+        })
+        .unwrap_or(false)
 }
 
 /// Parsed response header and answers.
@@ -1198,5 +1260,18 @@ mod tests {
             parse_response(&packet, &expected(31, "example.com", RecordType::A)),
             Err(DnsError::BadResponse(_))
         ));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn up_but_not_running_interface_still_counts_as_ipv4() {
+        let up = libc::IFF_UP as libc::c_uint;
+        let running = libc::IFF_RUNNING as libc::c_uint;
+        let loopback = libc::IFF_LOOPBACK as libc::c_uint;
+
+        // IFF_UP without IFF_RUNNING is the "cable unplugged" case Go counts.
+        assert!(interface_flags_allow_ipv4(up));
+        assert!(interface_flags_allow_ipv4(up | running));
+        assert!(!interface_flags_allow_ipv4(running));
+        assert!(!interface_flags_allow_ipv4(up | loopback));
     }
 }
