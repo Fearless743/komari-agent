@@ -32,6 +32,9 @@ OS_NAME=""
 ARCH=""
 AGENT_ARGS=()
 REPO="fearless743/komari-agent"
+# Test hooks: prefix service definition paths and skip service commands.
+SERVICE_ROOT="${KOMARI_SERVICE_ROOT:-}"
+SERVICE_RENDER_ONLY="${KOMARI_SERVICE_RENDER_ONLY:-0}"
 
 # Filled in by detect_platform / parse_args.
 RED=""
@@ -88,6 +91,10 @@ die() {
 }
 
 run_cmd() {
+    if [ "$SERVICE_RENDER_ONLY" = "1" ]; then
+        log_info "[render-only] $*"
+        return 0
+    fi
     if [ "$DRY_RUN" = true ]; then
         log_info "[dry-run] $*"
     else
@@ -499,6 +506,65 @@ detect_init_system() {
 
 # Stop and remove a service previously created by this installer (or by the Go
 # installer). Safe to call when nothing is installed.
+service_is_running() {
+    local init_system="$1"
+    local domain="${2:-}"
+
+    case "$init_system" in
+        systemd)
+            command -v systemctl >/dev/null 2>&1 &&
+                systemctl is-active --quiet "${SERVICE_NAME}.service"
+            ;;
+        openrc)
+            command -v rc-service >/dev/null 2>&1 &&
+                rc-service "$SERVICE_NAME" status >/dev/null 2>&1
+            ;;
+        procd)
+            local pidfile="/var/run/${SERVICE_NAME}.pid"
+            if [ -f "$pidfile" ] && [ -s "$pidfile" ]; then
+                kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null && return 0
+            fi
+            command -v pgrep >/dev/null 2>&1 && pgrep -f "$AGENT_PATH" >/dev/null 2>&1
+            ;;
+        upstart)
+            command -v initctl >/dev/null 2>&1 &&
+                initctl status "$SERVICE_NAME" 2>/dev/null | grep -q 'start/running'
+            ;;
+        bsdrc)
+            local rc_name="${SERVICE_NAME//-/_}"
+            local pidfile="/var/run/${rc_name}.pid"
+            [ -f "$pidfile" ] && [ -s "$pidfile" ] &&
+                kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null
+            ;;
+        launchd)
+            command -v launchctl >/dev/null 2>&1 &&
+                launchctl print "${domain}/com.komari.${SERVICE_NAME}" >/dev/null 2>&1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+wait_for_service_stopped() {
+    local init_system="$1"
+    local domain="${2:-}"
+    local timeout="${KOMARI_STOP_TIMEOUT:-15}"
+    local waited=0
+
+    while service_is_running "$init_system" "$domain"; do
+        waited=$((waited + 1))
+        if [ "$waited" -ge "$timeout" ]; then
+            return 1
+        fi
+        sleep 1
+    done
+    return 0
+}
+
+# Stop and remove a service previously created by this installer (or by the Go
+# installer). A failed stop aborts the operation so an upgrade never reports
+# success while the old process is still running.
 stop_previous_service() {
     local init_system="$1"
 
@@ -506,58 +572,118 @@ stop_previous_service() {
 
     case "$init_system" in
         systemd)
-            local unit="/etc/systemd/system/${SERVICE_NAME}.service"
+            local unit="${SERVICE_ROOT}/etc/systemd/system/${SERVICE_NAME}.service"
             if [ -f "$unit" ]; then
                 log_info "Stopping and disabling existing systemd service..."
-                run_cmd systemctl stop "${SERVICE_NAME}.service" || true
-                run_cmd systemctl disable "${SERVICE_NAME}.service" || true
-                run_cmd rm -f "$unit"
-                run_cmd systemctl daemon-reload
+                if service_is_running systemd; then
+                    run_cmd systemctl stop "${SERVICE_NAME}.service" ||
+                        die "Failed to stop ${SERVICE_NAME}.service"
+                    if [ "$DRY_RUN" = false ] && ! wait_for_service_stopped systemd; then
+                        die "${SERVICE_NAME}.service is still running after systemctl stop"
+                    fi
+                fi
+                if [ "$DRY_RUN" = false ] &&
+                    systemctl is-enabled --quiet "${SERVICE_NAME}.service" 2>/dev/null; then
+                    run_cmd systemctl disable "${SERVICE_NAME}.service" ||
+                        die "Failed to disable ${SERVICE_NAME}.service"
+                fi
+                run_cmd rm -f "$unit" || die "Failed to remove $unit"
+                run_cmd systemctl daemon-reload || log_warning "systemctl daemon-reload failed"
             fi
             ;;
         openrc)
-            if [ -f "/etc/init.d/${SERVICE_NAME}" ]; then
+            if [ -f "${SERVICE_ROOT}/etc/init.d/${SERVICE_NAME}" ]; then
                 log_info "Stopping and disabling existing OpenRC service..."
-                run_cmd rc-service "$SERVICE_NAME" stop || true
-                run_cmd rc-update del "$SERVICE_NAME" default || true
-                run_cmd rm -f "/etc/init.d/${SERVICE_NAME}"
+                if service_is_running openrc; then
+                    run_cmd rc-service "$SERVICE_NAME" stop ||
+                        die "Failed to stop OpenRC service $SERVICE_NAME"
+                    if [ "$DRY_RUN" = false ] && ! wait_for_service_stopped openrc; then
+                        die "OpenRC service $SERVICE_NAME is still running after stop"
+                    fi
+                fi
+                if [ "$DRY_RUN" = false ] &&
+                    rc-update show default 2>/dev/null | grep -qw "$SERVICE_NAME"; then
+                    run_cmd rc-update del "$SERVICE_NAME" default ||
+                        die "Failed to remove $SERVICE_NAME from the default runlevel"
+                fi
+                run_cmd rm -f "${SERVICE_ROOT}/etc/init.d/${SERVICE_NAME}" ||
+                    die "Failed to remove /etc/init.d/${SERVICE_NAME}"
             fi
             ;;
         procd)
-            if [ -f "/etc/init.d/${SERVICE_NAME}" ]; then
+            if [ -f "${SERVICE_ROOT}/etc/init.d/${SERVICE_NAME}" ]; then
                 log_info "Stopping and disabling existing procd service..."
-                run_cmd "/etc/init.d/${SERVICE_NAME}" stop || true
-                run_cmd "/etc/init.d/${SERVICE_NAME}" disable || true
-                run_cmd rm -f "/etc/init.d/${SERVICE_NAME}"
+                if service_is_running procd; then
+                    run_cmd "${SERVICE_ROOT}/etc/init.d/${SERVICE_NAME}" stop ||
+                        die "Failed to stop procd service $SERVICE_NAME"
+                    if [ "$DRY_RUN" = false ] && ! wait_for_service_stopped procd; then
+                        die "procd service $SERVICE_NAME is still running after stop"
+                    fi
+                fi
+                run_cmd "${SERVICE_ROOT}/etc/init.d/${SERVICE_NAME}" disable ||
+                    die "Failed to disable procd service $SERVICE_NAME"
+                run_cmd rm -f "${SERVICE_ROOT}/etc/init.d/${SERVICE_NAME}" ||
+                    die "Failed to remove /etc/init.d/${SERVICE_NAME}"
             fi
             ;;
         upstart)
-            if [ -f "/etc/init/${SERVICE_NAME}.conf" ]; then
+            if [ -f "${SERVICE_ROOT}/etc/init/${SERVICE_NAME}.conf" ]; then
                 log_info "Stopping and removing existing upstart service..."
-                run_cmd initctl stop "$SERVICE_NAME" || true
-                run_cmd rm -f "/etc/init/${SERVICE_NAME}.conf"
+                if service_is_running upstart; then
+                    run_cmd initctl stop "$SERVICE_NAME" ||
+                        die "Failed to stop upstart service $SERVICE_NAME"
+                    if [ "$DRY_RUN" = false ] && ! wait_for_service_stopped upstart; then
+                        die "Upstart service $SERVICE_NAME is still running after stop"
+                    fi
+                fi
+                run_cmd rm -f "${SERVICE_ROOT}/etc/init/${SERVICE_NAME}.conf" ||
+                    die "Failed to remove /etc/init/${SERVICE_NAME}.conf"
             fi
             ;;
         bsdrc)
-            if [ -f "/usr/local/etc/rc.d/${SERVICE_NAME}" ]; then
+            if [ -f "${SERVICE_ROOT}/usr/local/etc/rc.d/${SERVICE_NAME}" ]; then
                 log_info "Stopping and disabling existing FreeBSD rc.d service..."
-                run_cmd service "$SERVICE_NAME" stop || true
-                run_cmd sysrc -x "${SERVICE_NAME//-/_}_enable" || true
-                run_cmd rm -f "/usr/local/etc/rc.d/${SERVICE_NAME}"
+                if service_is_running bsdrc; then
+                    run_cmd service "$SERVICE_NAME" stop ||
+                        die "Failed to stop FreeBSD rc.d service $SERVICE_NAME"
+                    if [ "$DRY_RUN" = false ] && ! wait_for_service_stopped bsdrc; then
+                        die "FreeBSD rc.d service $SERVICE_NAME is still running after stop"
+                    fi
+                fi
+                if [ "$DRY_RUN" = false ] && command -v sysrc >/dev/null 2>&1; then
+                    run_cmd sysrc -x "${SERVICE_NAME//-/_}_enable" ||
+                        log_warning "Failed to remove ${SERVICE_NAME//-/_}_enable from rc.conf"
+                fi
+                run_cmd rm -f "${SERVICE_ROOT}/usr/local/etc/rc.d/${SERVICE_NAME}" ||
+                    die "Failed to remove /usr/local/etc/rc.d/${SERVICE_NAME}"
             fi
             ;;
         launchd)
-            local system_plist="/Library/LaunchDaemons/com.komari.${SERVICE_NAME}.plist"
-            local user_plist="$HOME/Library/LaunchAgents/com.komari.${SERVICE_NAME}.plist"
+            local system_plist="${SERVICE_ROOT}/Library/LaunchDaemons/com.komari.${SERVICE_NAME}.plist"
+            local user_plist="${SERVICE_ROOT}$HOME/Library/LaunchAgents/com.komari.${SERVICE_NAME}.plist"
             if [ -f "$system_plist" ]; then
                 log_info "Stopping and removing existing system launchd service..."
-                run_cmd launchctl bootout system "$system_plist" || true
-                run_cmd rm -f "$system_plist"
+                if service_is_running launchd system; then
+                    run_cmd launchctl bootout system "$system_plist" ||
+                        die "Failed to stop launchd service com.komari.${SERVICE_NAME}"
+                    if [ "$DRY_RUN" = false ] &&
+                        ! wait_for_service_stopped launchd system; then
+                        die "launchd service com.komari.${SERVICE_NAME} is still loaded"
+                    fi
+                fi
+                run_cmd rm -f "$system_plist" || die "Failed to remove $system_plist"
             fi
             if [ -f "$user_plist" ]; then
                 log_info "Stopping and removing existing user launchd service..."
-                run_cmd launchctl bootout "gui/$(id -u)" "$user_plist" || true
-                run_cmd rm -f "$user_plist"
+                if service_is_running launchd "gui/$(id -u)"; then
+                    run_cmd launchctl bootout "gui/$(id -u)" "$user_plist" ||
+                        die "Failed to stop user launchd service com.komari.${SERVICE_NAME}"
+                    if [ "$DRY_RUN" = false ] &&
+                        ! wait_for_service_stopped launchd "gui/$(id -u)"; then
+                        die "User launchd service com.komari.${SERVICE_NAME} is still loaded"
+                    fi
+                fi
+                run_cmd rm -f "$user_plist" || die "Failed to remove $user_plist"
             fi
             ;;
         nixos)
@@ -594,82 +720,8 @@ config_get_number() {
 # Replace (or append) one top-level key while preserving every other key.
 # The value is passed through the environment so secrets never show up in the
 # process argument list.
-config_set() {
-    local key="$1"
-    local value="$2"
-    local quoted="$3"
-    local tmp="${CONFIG_FILE}.tmp.$$"
-
-    KEY="$key" VALUE="$value" QUOTED="$quoted" awk '
-        BEGIN {
-            key = ENVIRON["KEY"]
-            value = ENVIRON["VALUE"]
-            quoted = ENVIRON["QUOTED"] == "1"
-            found = 0
-            n = 0
-        }
-        {
-            if (!found && $0 ~ ("^[[:space:]]*\"" key "\"[[:space:]]*:")) {
-                indent = $0
-                sub(/[^ \t].*/, "", indent)
-                comma = ($0 ~ /,[[:space:]]*$/) ? "," : ""
-                if (quoted) {
-                    out[++n] = indent "\"" key "\": \"" value "\"" comma
-                } else {
-                    out[++n] = indent "\"" key "\": " value comma
-                }
-                found = 1
-                next
-            }
-            out[++n] = $0
-        }
-        END {
-            if (!found && n > 0 && out[n] ~ /^[[:space:]]*}[[:space:]]*$/) {
-                # Insert the new key before the closing brace and make sure
-                # the previous entry is comma-terminated.
-                last_entry = 0
-                for (i = 1; i < n; i++) {
-                    if (out[i] !~ /^[[:space:]]*$/ && out[i] !~ /^[[:space:]]*\{[[:space:]]*$/) {
-                        last_entry = i
-                    }
-                }
-                for (i = 1; i < n; i++) {
-                    line = out[i]
-                    if (i == last_entry && line !~ /,[[:space:]]*$/) {
-                        line = line ","
-                    }
-                    print line
-                }
-                if (quoted) {
-                    print "  \"" key "\": \"" value "\""
-                } else {
-                    print "  \"" key "\": " value
-                }
-                print out[n]
-            } else {
-                if (!found) {
-                    if (quoted) {
-                        out[++n] = "  \"" key "\": \"" value "\","
-                    } else {
-                        out[++n] = "  \"" key "\": " value ","
-                    }
-                }
-                for (i = 1; i <= n; i++) {
-                    print out[i]
-                }
-            }
-        }
-    ' "$CONFIG_FILE" >"$tmp"
-
-    mv -f "$tmp" "$CONFIG_FILE"
-    chmod 600 "$CONFIG_FILE"
-}
-
-write_default_config() {
-    local old_umask
-    old_umask=$(umask)
-    umask 077
-    cat >"$CONFIG_FILE" <<'EOF'
+config_template() {
+    cat <<'EOF'
 {
   "endpoint": "",
   "token": "",
@@ -681,8 +733,185 @@ write_default_config() {
   "protocol_version": 1
 }
 EOF
+}
+
+config_validate() {
+    local file="$1"
+    if command -v jq >/dev/null 2>&1; then
+        jq empty "$file" >/dev/null 2>&1
+        return $?
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -m json.tool "$file" >/dev/null 2>&1
+        return $?
+    fi
+    # No JSON parser available; the generator only emits known-good output.
+    return 0
+}
+
+# Rewrite a config without jq/python3. Existing endpoint/token/interval are
+# preserved, but unknown keys cannot be carried over safely.
+fallback_rewrite_config() {
+    local file="$1"
+    local tmp="$2"
+    local endpoint token interval
+
+    endpoint=$(config_get_string endpoint)
+    token=$(config_get_string token)
+    interval=$(config_get_number interval)
+    [ -n "$ENDPOINT" ] && endpoint="$ENDPOINT"
+    [ -n "$TOKEN" ] && token="$TOKEN"
+    [ -n "$INTERVAL" ] && interval="$INTERVAL"
+    [ -n "$interval" ] || interval="1.0"
+
+    log_warning "jq/python3 not found; rewriting $file without preserving unknown keys"
+    {
+        printf '{\n'
+        printf '  "endpoint": "%s",\n' "$(json_escape "$endpoint")"
+        printf '  "token": "%s",\n' "$(json_escape "$token")"
+        printf '  "interval": %s,\n' "$interval"
+        printf '  "ignore_unsafe_cert": false,\n'
+        printf '  "max_retries": 3,\n'
+        printf '  "reconnect_interval": 5,\n'
+        printf '  "info_report_interval": 5,\n'
+        printf '  "protocol_version": 1\n'
+        printf '}\n'
+    } >"$tmp"
+}
+
+# Merge endpoint/token/interval into an existing (or new) config. The original
+# file is never modified in place: the result is validated in a 0600 temp file
+# and only then renamed over the target.
+config_merge() {
+    local file="$1"
+    local dir base base_tmp tmp ovtmp backup old_umask
+    local overrides sep
+
+    dir=$(dirname "$file")
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir" || die "Failed to create config directory: $dir"
+    fi
+
+    old_umask=$(umask)
+    umask 077
+
+    tmp=$(mktemp "${file}.tmp.XXXXXX") || {
+        umask "$old_umask"
+        die "Failed to create a temporary config file next to $file"
+    }
+    ovtmp=""
+    backup=""
+    base_tmp=""
+
+    base="$file"
+    if [ ! -s "$file" ] || grep -Eq '^[[:space:]]*\{[[:space:]]*\}[[:space:]]*$' "$file"; then
+        base_tmp=$(mktemp "${file}.base.XXXXXX") || {
+            rm -f "$tmp"
+            umask "$old_umask"
+            die "Failed to create a temporary base config file"
+        }
+        config_template >"$base_tmp"
+        base="$base_tmp"
+    fi
+
+    if [ -f "$file" ]; then
+        backup="${file}.bak.$$"
+        cp -p "$file" "$backup" || {
+            rm -f "$tmp"
+            umask "$old_umask"
+            die "Failed to back up $file"
+        }
+    fi
+
+    if command -v jq >/dev/null 2>&1; then
+        if [ -n "$ENDPOINT" ] || [ -n "$TOKEN" ] || [ -n "$INTERVAL" ]; then
+            ovtmp=$(mktemp "${file}.overrides.XXXXXX") || {
+                rm -f "$tmp" "$backup" "$base_tmp"
+                umask "$old_umask"
+                die "Failed to create a temporary overrides file"
+            }
+            overrides="{"
+            sep=""
+            if [ -n "$ENDPOINT" ]; then
+                overrides="${overrides}${sep}\"endpoint\":\"$(json_escape "$ENDPOINT")\""
+                sep=","
+            fi
+            if [ -n "$TOKEN" ]; then
+                overrides="${overrides}${sep}\"token\":\"$(json_escape "$TOKEN")\""
+                sep=","
+            fi
+            if [ -n "$INTERVAL" ]; then
+                overrides="${overrides}${sep}\"interval\":${INTERVAL}"
+            fi
+            overrides="${overrides}}"
+            printf '%s' "$overrides" >"$ovtmp"
+            if ! jq --slurpfile ov "$ovtmp" '. * $ov[0]' "$base" >"$tmp"; then
+                rm -f "$tmp" "$ovtmp" "$backup" "$base_tmp"
+                umask "$old_umask"
+                die "Failed to merge $file with jq; the original file was not changed"
+            fi
+        elif ! jq '.' "$base" >"$tmp"; then
+            rm -f "$tmp" "$backup" "$base_tmp"
+            umask "$old_umask"
+            die "Failed to parse $file with jq; the original file was not changed"
+        fi
+    elif command -v python3 >/dev/null 2>&1; then
+        if ! KOMARI_CFG_ENDPOINT="$ENDPOINT" \
+            KOMARI_CFG_TOKEN="$TOKEN" \
+            KOMARI_CFG_INTERVAL="$INTERVAL" \
+            python3 - "$base" "$tmp" <<'PY'
+import json
+import os
+import sys
+
+src, dst = sys.argv[1], sys.argv[2]
+data = {}
+if os.path.exists(src) and os.path.getsize(src) > 0:
+    with open(src, encoding="utf-8") as handle:
+        data = json.load(handle)
+if not isinstance(data, dict):
+    raise SystemExit("config root must be a JSON object")
+
+for key, env in (
+    ("endpoint", "KOMARI_CFG_ENDPOINT"),
+    ("token", "KOMARI_CFG_TOKEN"),
+):
+    value = os.environ.get(env, "")
+    if value:
+        data[key] = value
+
+interval = os.environ.get("KOMARI_CFG_INTERVAL", "")
+if interval:
+    data["interval"] = float(interval)
+
+with open(dst, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+PY
+        then
+            rm -f "$tmp" "$backup" "$base_tmp"
+            umask "$old_umask"
+            die "Failed to merge $file with python3; the original file was not changed"
+        fi
+    else
+        fallback_rewrite_config "$file" "$tmp"
+    fi
+
+    if ! config_validate "$tmp"; then
+        rm -f "$tmp" "$ovtmp" "$backup" "$base_tmp"
+        umask "$old_umask"
+        die "Generated config failed JSON validation; $file was not changed"
+    fi
+
+    chmod 600 "$tmp"
+    if ! mv -f "$tmp" "$file"; then
+        rm -f "$tmp" "$ovtmp" "$backup" "$base_tmp"
+        umask "$old_umask"
+        die "Failed to install the new config at $file"
+    fi
+    chmod 600 "$file"
+    rm -f "$ovtmp" "$backup" "$base_tmp"
     umask "$old_umask"
-    chmod 600 "$CONFIG_FILE"
 }
 
 install_config() {
@@ -708,30 +937,8 @@ install_config() {
         return 0
     fi
 
-    local endpoint="${ENDPOINT}"
-    local token="${TOKEN}"
-    local interval="${INTERVAL}"
-
-    if [ ! -f "$CONFIG_FILE" ]; then
-        log_step "Creating configuration: $CONFIG_FILE"
-        write_default_config
-    else
-        log_step "Updating configuration: $CONFIG_FILE"
-        # Keep existing values for keys the caller did not override.
-        [ -n "$endpoint" ] || endpoint=$(config_get_string endpoint)
-        [ -n "$token" ] || token=$(config_get_string token)
-        [ -n "$interval" ] || interval=$(config_get_number interval)
-    fi
-
-    if [ -n "$endpoint" ]; then
-        config_set endpoint "$(json_escape "$endpoint")" 1
-    fi
-    if [ -n "$token" ]; then
-        config_set token "$(json_escape "$token")" 1
-    fi
-    if [ -n "$interval" ]; then
-        config_set interval "$interval" 0
-    fi
+    log_step "Writing configuration: $CONFIG_FILE"
+    config_merge "$CONFIG_FILE"
 
     if [ -z "$(config_get_string endpoint)" ] || [ -z "$(config_get_string token)" ]; then
         log_warning "endpoint and/or token are not set; edit $CONFIG_FILE before starting the agent."
@@ -751,18 +958,67 @@ build_exec_args() {
     fi
 }
 
-format_exec_start() {
+# Escape a value for use inside a double-quoted shell string.
+shell_dquote_content() {
+    printf '%s' "$1" | sed -e 's/[\\"$`]/\\&/g'
+}
+
+# POSIX-shell quoting for a single word.
+sh_quote() {
+    printf '%q' "$1"
+}
+
+# systemd ExecStart quoting: backslash, double quote and % specifiers.
+systemd_quote_arg() {
+    local arg="$1"
+    arg="${arg//\\/\\\\}"
+    arg="${arg//\"/\\\"}"
+    arg="${arg//%/%%}"
+    arg="${arg//\$/\$\$}"
+    if [ -z "$arg" ] || [[ "$arg" == *[[:space:]]* ]] || [[ "$arg" == *\"* ]]; then
+        printf '"%s"' "$arg"
+    else
+        printf '%s' "$arg"
+    fi
+}
+
+format_exec_start_systemd() {
     local out=""
     local arg
     for arg in "$@"; do
-        if [ -z "$arg" ] || [[ "$arg" == *[[:space:]]* ]] || [[ "$arg" == *\"* ]]; then
-            arg="${arg//\"/\\\"}"
-            out="$out \"$arg\""
+        out="$out $(systemd_quote_arg "$arg")"
+    done
+    printf '%s' "${out# }"
+}
+
+# Quote for embedding in a double-quoted shell assignment (OpenRC command_args).
+format_exec_start_double() {
+    local out=""
+    local arg
+    for arg in "$@"; do
+        if [ -z "$arg" ] || [[ "$arg" == *[[:space:]]* ]] ||
+            [[ "$arg" == *[\"\$\`\\]* ]]; then
+            out="$out \\\"$(shell_dquote_content "$arg")\\\""
         else
             out="$out $arg"
         fi
     done
     printf '%s' "${out# }"
+}
+
+# Quote for direct use in a shell script (upstart/procd exec lines).
+format_exec_start_shell() {
+    local out=""
+    local arg
+    for arg in "$@"; do
+        out="$out $(sh_quote "$arg")"
+    done
+    printf '%s' "${out# }"
+}
+
+# Escape a value for a Nix double-quoted string.
+nix_escape() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\${/\\${/g'
 }
 
 xml_escape() {
@@ -778,9 +1034,10 @@ write_service() {
 
     case "$init_system" in
         systemd)
-            local unit="/etc/systemd/system/${SERVICE_NAME}.service"
-            local exec_start
-            exec_start=$(format_exec_start "$AGENT_PATH" "${EXEC_ARGS[@]}")
+            local unit="${SERVICE_ROOT}/etc/systemd/system/${SERVICE_NAME}.service"
+            local exec_start working_directory
+            exec_start=$(format_exec_start_systemd "$AGENT_PATH" "${EXEC_ARGS[@]}")
+            working_directory=$(systemd_quote_arg "$TARGET_DIR")
             if [ "$DRY_RUN" = true ]; then
                 log_info "[dry-run] would write $unit"
                 printf '%s\n' "ExecStart=$exec_start"
@@ -796,10 +1053,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=$exec_start
-WorkingDirectory=$TARGET_DIR
+WorkingDirectory=$working_directory
 Restart=always
 RestartSec=5
 User=root
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
@@ -810,9 +1068,11 @@ EOF
             log_success "Systemd service configured and started"
             ;;
         openrc)
-            local service_file="/etc/init.d/${SERVICE_NAME}"
-            local args
-            args=$(format_exec_start "${EXEC_ARGS[@]}")
+            local service_file="${SERVICE_ROOT}/etc/init.d/${SERVICE_NAME}"
+            local command_path command_args directory
+            command_path=$(shell_dquote_content "$AGENT_PATH")
+            command_args=$(format_exec_start_double "${EXEC_ARGS[@]}")
+            directory=$(shell_dquote_content "$TARGET_DIR")
             if [ "$DRY_RUN" = true ]; then
                 log_info "[dry-run] would write $service_file"
                 return 0
@@ -823,13 +1083,15 @@ EOF
 
 name="Komari Agent Service"
 description="Komari monitoring agent"
-command="${AGENT_PATH}"
-command_args="${args# }"
+command="${command_path}"
+command_args="${command_args}"
 command_user="root"
-directory="${TARGET_DIR}"
+directory="${directory}"
 pidfile="/run/${SERVICE_NAME}.pid"
 retry="SIGTERM/30"
 supervisor=supervise-daemon
+
+umask 077
 
 depend() {
     need net
@@ -842,9 +1104,10 @@ EOF
             log_success "OpenRC service configured and started"
             ;;
         procd)
-            local service_file="/etc/init.d/${SERVICE_NAME}"
-            local args
-            args=$(format_exec_start "${EXEC_ARGS[@]}")
+            local service_file="${SERVICE_ROOT}/etc/init.d/${SERVICE_NAME}"
+            local prog procd_command
+            prog=$(shell_dquote_content "$AGENT_PATH")
+            procd_command=$(format_exec_start_shell "$AGENT_PATH" "${EXEC_ARGS[@]}")
             if [ "$DRY_RUN" = true ]; then
                 log_info "[dry-run] would write $service_file"
                 return 0
@@ -858,16 +1121,16 @@ STOP=10
 
 USE_PROCD=1
 
-PROG="${AGENT_PATH}"
-ARGS="${args# }"
+PROG="${prog}"
 
 start_service() {
     procd_open_instance
-    procd_set_param command "\$PROG" \$ARGS
+    procd_set_param command ${procd_command}
     procd_set_param respawn
     procd_set_param stdout 1
     procd_set_param stderr 1
     procd_set_param user root
+    procd_set_param umask 0077
     procd_close_instance
 }
 
@@ -881,20 +1144,20 @@ reload_service() {
 }
 EOF
             chmod 0755 "$service_file"
-            run_cmd "/etc/init.d/${SERVICE_NAME}" enable
-            run_cmd "/etc/init.d/${SERVICE_NAME}" start
+            run_cmd "${SERVICE_ROOT}/etc/init.d/${SERVICE_NAME}" enable
+            run_cmd "${SERVICE_ROOT}/etc/init.d/${SERVICE_NAME}" start
             log_success "procd service configured and started"
             ;;
         launchd)
             local plist_dir plist_file service_user log_dir domain
             if [[ "$TARGET_DIR" =~ ^/Users/.* ]] || [ "$(id -u)" -ne 0 ]; then
-                plist_dir="$HOME/Library/LaunchAgents"
+                plist_dir="${SERVICE_ROOT}$HOME/Library/LaunchAgents"
                 service_user="$(id -un)"
                 log_dir="$HOME/Library/Logs"
                 domain="gui/$(id -u)"
                 log_info "Installing as user-level service (LaunchAgent)"
             else
-                plist_dir="/Library/LaunchDaemons"
+                plist_dir="${SERVICE_ROOT}/Library/LaunchDaemons"
                 service_user="root"
                 log_dir="/var/log"
                 domain="system"
@@ -927,6 +1190,8 @@ EOF
     </array>
     <key>WorkingDirectory</key>
     <string>$(xml_escape "$TARGET_DIR")</string>
+    <key>Umask</key>
+    <integer>63</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -946,9 +1211,10 @@ EOF
             log_success "launchd service configured and started"
             ;;
         upstart)
-            local service_file="/etc/init/${SERVICE_NAME}.conf"
-            local exec_start
-            exec_start=$(format_exec_start "$AGENT_PATH" "${EXEC_ARGS[@]}")
+            local service_file="${SERVICE_ROOT}/etc/init/${SERVICE_NAME}.conf"
+            local exec_start chdir_path
+            exec_start=$(format_exec_start_shell "$AGENT_PATH" "${EXEC_ARGS[@]}")
+            chdir_path=$(shell_dquote_content "$TARGET_DIR")
             if [ "$DRY_RUN" = true ]; then
                 log_info "[dry-run] would write $service_file"
                 return 0
@@ -958,18 +1224,18 @@ EOF
 # KOMARI Agent
 description "Komari Agent Service"
 
-chdir $TARGET_DIR
+chdir "${chdir_path}"
 start on filesystem or runlevel [2345]
 stop on runlevel [!2345]
 
 respawn
 respawn limit 10 5
-umask 022
+umask 077
 
 console none
 
 pre-start script
-    test -x $AGENT_PATH || { stop; exit 0; }
+    test -x $(sh_quote "$AGENT_PATH") || { stop; exit 0; }
 end script
 
 script
@@ -981,10 +1247,11 @@ EOF
             log_success "Upstart service configured and started"
             ;;
         bsdrc)
-            local service_file="/usr/local/etc/rc.d/${SERVICE_NAME}"
+            local service_file="${SERVICE_ROOT}/usr/local/etc/rc.d/${SERVICE_NAME}"
             local rc_name="${SERVICE_NAME//-/_}"
-            local args
-            args=$(format_exec_start "${EXEC_ARGS[@]}")
+            local daemon_args agent_basename
+            daemon_args=$(format_exec_start_double "$AGENT_PATH" "${EXEC_ARGS[@]}")
+            agent_basename=$(basename "$AGENT_PATH")
             if [ "$DRY_RUN" = true ]; then
                 log_info "[dry-run] would write $service_file"
                 return 0
@@ -1000,9 +1267,14 @@ EOF
 
 name="${rc_name}"
 rcvar="\${name}_enable"
-command="${AGENT_PATH}"
-command_args="${args# }"
 pidfile="/var/run/\${name}.pid"
+procname="${agent_basename}"
+# komari-agent does not daemonize itself; /usr/sbin/daemon forks and writes
+# the pidfile so rc.subr stop/status work.
+command="/usr/sbin/daemon"
+command_args="-p \${pidfile} ${daemon_args}"
+
+umask 077
 
 load_rc_config \$name
 : \${${rc_name}_enable:="YES"}
@@ -1015,6 +1287,9 @@ EOF
             log_success "FreeBSD rc.d service configured and started"
             ;;
         nixos)
+            local exec_line working_directory
+            exec_line=$(nix_escape "$(format_exec_start_systemd "$AGENT_PATH" "${EXEC_ARGS[@]}")")
+            working_directory=$(nix_escape "$TARGET_DIR")
             log_warning "NixOS detected. System services must be configured declaratively."
             cat <<EOF
 
@@ -1026,10 +1301,11 @@ systemd.services.${SERVICE_NAME} = {
   wantedBy = [ "multi-user.target" ];
   serviceConfig = {
     Type = "simple";
-    ExecStart = "$(format_exec_start "$AGENT_PATH" "${EXEC_ARGS[@]}")";
-    WorkingDirectory = "$TARGET_DIR";
+    ExecStart = "${exec_line}";
+    WorkingDirectory = "${working_directory}";
     Restart = "always";
     User = "root";
+    UMask = "0077";
   };
 };
 
