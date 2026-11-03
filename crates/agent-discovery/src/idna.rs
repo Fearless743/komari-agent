@@ -44,17 +44,13 @@ pub fn convert_host_to_ascii(host: &str) -> Result<String, IdnaError> {
 /// The rest of the URL (scheme, path, query) is preserved by the `url` crate.
 pub fn convert_url_to_ascii(url_str: &str) -> Result<String, IdnaError> {
     let mut url = Url::parse(url_str)?;
-    let host = url
-        .host_str()
-        .ok_or_else(|| IdnaError::MissingHost(url_str.to_owned()))?
-        .to_owned();
+    let host = match url.host() {
+        Some(url::Host::Domain(domain)) => domain.to_owned(),
+        Some(url::Host::Ipv4(_) | url::Host::Ipv6(_)) => return Ok(url.to_string()),
+        None => return Err(IdnaError::MissingHost(url_str.to_owned())),
+    };
 
-    if host.parse::<IpAddr>().is_ok() {
-        return Ok(url.to_string());
-    }
-
-    let ascii =
-        idna::domain_to_ascii(&host).map_err(|_| IdnaError::InvalidDomain(host.to_owned()))?;
+    let ascii = idna::domain_to_ascii(&host).map_err(|_| IdnaError::InvalidDomain(host.clone()))?;
     url.set_host(Some(&ascii))
         .map_err(|_| IdnaError::InvalidDomain(host))?;
 
@@ -111,6 +107,9 @@ mod tests {
 
         let ipv4 = convert_url_to_ascii("https://1.1.1.1:8443/api").unwrap();
         assert_eq!(ipv4, "https://1.1.1.1:8443/api");
+
+        let ipv6 = convert_url_to_ascii("https://[::1]:8443/api").unwrap();
+        assert_eq!(ipv6, "https://[::1]:8443/api");
 
         assert!(matches!(
             convert_url_to_ascii("not a url"),

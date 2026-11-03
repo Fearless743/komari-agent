@@ -13,7 +13,7 @@
 
 use std::fs;
 use std::io::ErrorKind;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -148,14 +148,18 @@ impl HttpClient for ReqwestHttpClient {
         let url = Url::parse(&request.url)
             .map_err(|err| DiscoveryError::InvalidEndpoint(err.to_string()))?;
         let host = url
-            .host_str()
-            .ok_or_else(|| DiscoveryError::InvalidEndpoint("URL has no host".to_owned()))?
-            .to_owned();
+            .host()
+            .ok_or_else(|| DiscoveryError::InvalidEndpoint("URL has no host".to_owned()))?;
+        let (host, is_ip) = match host {
+            url::Host::Domain(domain) => (domain.to_owned(), false),
+            url::Host::Ipv4(address) => (address.to_string(), true),
+            url::Host::Ipv6(address) => (address.to_string(), true),
+        };
         let port = url
             .port_or_known_default()
             .ok_or_else(|| DiscoveryError::InvalidEndpoint("URL has no port".to_owned()))?;
 
-        if host.parse::<IpAddr>().is_ok() {
+        if is_ip {
             let client = self.client(None);
             return self.send_once(&client, &request).await;
         }
