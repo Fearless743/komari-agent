@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -178,45 +179,80 @@ fn dns_question_type(query: &[u8]) -> Option<u16> {
     ]))
 }
 
-fn dns_response(query: &[u8]) -> Vec<u8> {
+fn dns_response(query: &[u8], addresses: &[[u8; 4]]) -> Vec<u8> {
     let record_type = dns_question_type(query).unwrap_or(1);
-    let address = [127, 0, 0, 1];
+    let answers: u16 = if record_type == 1 {
+        addresses.len() as u16
+    } else {
+        0
+    };
 
     let mut packet = Vec::new();
     packet.extend_from_slice(&query[..2]);
     packet.extend_from_slice(&0x8180u16.to_be_bytes());
     packet.extend_from_slice(&1u16.to_be_bytes());
-    let answers: u16 = if record_type == 1 { 1 } else { 0 };
     packet.extend_from_slice(&answers.to_be_bytes());
     packet.extend_from_slice(&0u16.to_be_bytes());
     packet.extend_from_slice(&0u16.to_be_bytes());
     packet.extend_from_slice(&query[12..]);
 
     if record_type == 1 {
-        packet.extend_from_slice(&[0xC0, 0x0C]);
-        packet.extend_from_slice(&1u16.to_be_bytes());
-        packet.extend_from_slice(&1u16.to_be_bytes());
-        packet.extend_from_slice(&60u32.to_be_bytes());
-        packet.extend_from_slice(&4u16.to_be_bytes());
-        packet.extend_from_slice(&address);
+        for address in addresses {
+            packet.extend_from_slice(&[0xC0, 0x0C]);
+            packet.extend_from_slice(&1u16.to_be_bytes());
+            packet.extend_from_slice(&1u16.to_be_bytes());
+            packet.extend_from_slice(&60u32.to_be_bytes());
+            packet.extend_from_slice(&4u16.to_be_bytes());
+            packet.extend_from_slice(address);
+        }
     }
 
     packet
 }
 
-async fn start_dns() -> SocketAddr {
+async fn start_dns_answers(addresses: Vec<[u8; 4]>) -> SocketAddr {
     let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let address = socket.local_addr().unwrap();
+    let addresses = Arc::new(addresses);
 
     tokio::spawn(async move {
         let mut buffer = vec![0u8; 1024];
         while let Ok((length, peer)) = socket.recv_from(&mut buffer).await {
-            let response = dns_response(&buffer[..length]);
+            let response = dns_response(&buffer[..length], &addresses);
             let _ = socket.send_to(&response, peer).await;
         }
     });
 
     address
+}
+
+async fn start_dns() -> SocketAddr {
+    start_dns_answers(vec![[127, 0, 0, 1]]).await
+}
+
+async fn start_failing_body_http() -> (SocketAddr, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let counter = attempts.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            counter.fetch_add(1, Ordering::SeqCst);
+            let _ = read_request(&mut socket).await;
+            let _ = socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nshort",
+                )
+                .await;
+            let _ = socket.shutdown().await;
+        }
+    });
+
+    (address, attempts)
 }
 
 fn options(endpoint: SocketAddr, config_path: std::path::PathBuf) -> AutoDiscoveryOptions {
@@ -461,4 +497,30 @@ async fn dns_resolution_is_covered_by_the_request_deadline() {
 
     assert!(matches!(error, DiscoveryError::Timeout), "{error:?}");
     assert!(!config_path.exists());
+}
+
+#[tokio::test]
+async fn response_body_failure_is_not_retried_on_second_address() {
+    let directory = tempfile::tempdir().unwrap();
+    let config_path = directory.path().join("auto-discovery.json");
+    let (http_address, attempts) = start_failing_body_http().await;
+    let dns_address = start_dns_answers(vec![[127, 0, 0, 1], [127, 0, 0, 2]]).await;
+
+    let mut settings = options(http_address, config_path.clone());
+    settings.endpoint = format!("http://multi.test:{}/", http_address.port());
+    settings.custom_dns = Some(dns_address.to_string());
+    settings.timeout = Duration::from_secs(2);
+
+    let discovery = AutoDiscovery::new(settings).unwrap();
+    let error = discovery.handle().await.unwrap_err();
+
+    assert!(
+        matches!(error, DiscoveryError::Http(_) | DiscoveryError::Timeout),
+        "{error:?}"
+    );
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        1,
+        "a POST whose response body failed must not be sent to the second IP"
+    );
 }
