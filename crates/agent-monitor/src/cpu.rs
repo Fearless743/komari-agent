@@ -176,15 +176,15 @@ fn sysfs_physical_cores(cpu_dir: &std::path::Path) -> Option<u32> {
 ///
 /// Physical core resolution:
 ///
-/// 1. unique `physical id` + `core id` pairs (x86 with or without SMT);
-/// 2. sum of `cpu cores` per `physical id` when `core id` is unavailable;
+/// 1. sum of `cpu cores` per `physical id` (gopsutil's cpuinfo fallback);
+/// 2. unique `physical id` + `core id` pairs (x86 with or without SMT);
 /// 3. unique `processor` entries when the topology fields are absent (common on
 ///    ARM64/RISC-V/LoongArch).
 ///
-/// gopsutil only implements the `physical id` + `cpu cores` step when sysfs is
-/// unavailable. Steps 1 and 3 are Rust safety fallbacks: Go reports 0 for ARM
-/// and containers without topology/cpuinfo fields, while this implementation
-/// reports the deduplicated processor count instead.
+/// gopsutil only implements step 1 when sysfs is unavailable. Steps 2 and 3
+/// are Rust safety fallbacks: Go reports 0 for ARM and containers without
+/// topology/cpuinfo fields, while this implementation reports the deduplicated
+/// core/processor count instead.
 ///
 /// The model name priority follows gopsutil: `model name` (or `Model Name`,
 /// `cpu`, `uarch`) first, then `Processor`, then `Hardware`, then `Model`.
@@ -240,13 +240,13 @@ pub(crate) fn parse_cpuinfo(content: &str) -> (Option<String>, u32) {
         }
     }
 
-    let physical_cores = if !pairs.is_empty() {
-        u32::try_from(pairs.len()).unwrap_or(u32::MAX)
-    } else if !cores_by_socket.is_empty() {
+    let physical_cores = if !cores_by_socket.is_empty() {
         cores_by_socket
             .values()
             .copied()
             .fold(0u32, u32::saturating_add)
+    } else if !pairs.is_empty() {
+        u32::try_from(pairs.len()).unwrap_or(u32::MAX)
     } else {
         u32::try_from(processors.len()).unwrap_or(u32::MAX)
     };
