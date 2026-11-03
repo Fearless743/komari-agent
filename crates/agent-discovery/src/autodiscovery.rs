@@ -96,7 +96,10 @@ impl ReqwestHttpClient {
         }
     }
 
-    fn client(&self, resolved: Option<(&str, SocketAddr)>) -> reqwest::Client {
+    fn client(
+        &self,
+        resolved: Option<(&str, SocketAddr)>,
+    ) -> Result<reqwest::Client, DiscoveryError> {
         let mut builder = reqwest::Client::builder()
             .timeout(self.timeout)
             .danger_accept_invalid_certs(self.ignore_unsafe_cert)
@@ -106,7 +109,9 @@ impl ReqwestHttpClient {
             builder = builder.resolve(host, address);
         }
 
-        builder.build().unwrap_or_else(|_| reqwest::Client::new())
+        builder
+            .build()
+            .map_err(|err| DiscoveryError::Http(format!("failed to build HTTP client: {err}")))
     }
 
     async fn send_once(
@@ -160,7 +165,7 @@ impl HttpClient for ReqwestHttpClient {
             .ok_or_else(|| DiscoveryError::InvalidEndpoint("URL has no port".to_owned()))?;
 
         if is_ip {
-            let client = self.client(None);
+            let client = self.client(None)?;
             return self.send_once(&client, &request).await;
         }
 
@@ -169,7 +174,7 @@ impl HttpClient for ReqwestHttpClient {
 
         for address in addresses {
             let resolved = SocketAddr::new(address, port);
-            let client = self.client(Some((host.as_str(), resolved)));
+            let client = self.client(Some((host.as_str(), resolved)))?;
             match self.send_once(&client, &request).await {
                 Ok(response) => return Ok(response),
                 Err(err) => last_error = Some(err.to_string()),
