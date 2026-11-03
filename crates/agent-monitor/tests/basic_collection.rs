@@ -134,6 +134,7 @@ fn host_proc_env_lookup_is_injected_without_global_state() {
 
     let options = MonitorOptions::from_env_lookup(&lookup);
     assert_eq!(options.proc_root, fixture.path());
+    assert!(options.strict_proc);
 
     let snapshot =
         Collector::new(options.with_cpu_sample_interval(Duration::from_millis(1))).collect();

@@ -94,9 +94,9 @@ let options = MonitorOptions::default()
 
 ### strict_proc
 
-`from_config` 在 `HOST_PROC` 非空时会自动启用 `strict_proc`。此时 proc 读取失败返回
-空值/未知值（CPU 为 `Unknown`、1 核），而不是悄悄改用容器自身的 `sysinfo` 数据。
-失败时首次会通过 `tracing::warn!` 输出一条告警。
+`from_config` 与 `from_env_lookup` 在 `HOST_PROC` 非空时会自动启用 `strict_proc`。
+此时 proc 读取失败返回空值/未知值（CPU 为 `Unknown`、1 核），而不是悄悄改用容器
+自身的 `sysinfo` 数据。失败时首次会通过 `tracing::warn!` 输出一条告警。
 
 未配置 `HOST_PROC` 时默认 `strict_proc = false`，proc 不可读会回退本机 `sysinfo`。
 可用 `with_strict_proc(true/false)` 显式覆盖。

@@ -102,6 +102,8 @@ impl MonitorOptions {
         let mut options = Self::default();
         if let Some(value) = lookup(HOST_PROC_ENV).filter(|value| !value.trim().is_empty()) {
             options.proc_root = PathBuf::from(value.trim());
+            // A resolved HOST_PROC is authoritative, like `from_config`.
+            options.strict_proc = true;
         }
         if let Some(value) = lookup(HOST_SYS_ENV).filter(|value| !value.trim().is_empty()) {
             options.sys_root = PathBuf::from(value.trim());
