@@ -8,11 +8,17 @@ repository.workspace = true
 description = "Self update support for the Komari agent"
 
 [dependencies]
-anyhow.workspace = true
-dirs.workspace = true
+async-trait.workspace = true
+hex = "0.4"
 reqwest.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+agent-discovery = { path = "../agent-discovery" }
+tempfile.workspace = true

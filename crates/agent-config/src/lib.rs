@@ -2,8 +2,11 @@
 //!
 //! Field names, JSON keys, environment variables and defaults mirror the Go
 //! implementation (`komari-agent/cmd/flags/flag.go` and
-//! `komari-agent/cmd/root.go`). Values are resolved with the following
-//! precedence, from highest to lowest:
+//! `komari-agent/cmd/root.go`), with one deliberate exception:
+//! [`Config::protocol_version`] defaults to `1` and any explicit value `>= 2`
+//! is downgraded to `1` with a warning, because protocol v2 was removed from
+//! this rewrite. Values are resolved with the following precedence, from
+//! highest to lowest:
 //!
 //! 1. command line flags
 //! 2. environment variables (`AGENT_*`, plus `HOST_PROC`)
@@ -30,7 +33,8 @@ const MASK: &str = "******";
 
 /// Resolved agent configuration.
 ///
-/// The fields and defaults match the Go `Config` struct.
+/// The fields and defaults match the Go `Config` struct, except
+/// [`Config::protocol_version`] (v2 is not implemented; see the crate docs).
 #[derive(Clone)]
 pub struct Config {
     pub auto_discovery_key: String,
@@ -93,7 +97,8 @@ impl Default for Config {
             get_ip_addr_from_nic: false,
             host_proc: String::new(),
             config_file: String::new(),
-            protocol_version: 2,
+            // v2 was removed from the Rust rewrite: only v1 is implemented.
+            protocol_version: 1,
             disable_compression: false,
             prefer_ip_version: String::new(),
         }
@@ -236,9 +241,17 @@ impl Config {
     }
 
     fn normalize_and_validate(&mut self) -> Result<(), ConfigError> {
-        // The Go agent falls back to protocol version 2 when it is unset.
-        if self.protocol_version == 0 {
-            self.protocol_version = 2;
+        // The Rust rewrite only implements protocol v1. Keep the Go semantics
+        // for "unset" and values below 2 (both mean v1), but downgrade explicit
+        // v2+ requests instead of silently doing something unsupported.
+        if self.protocol_version != 1 {
+            if self.protocol_version >= 2 {
+                tracing::warn!(
+                    requested = self.protocol_version,
+                    "protocol v2 is not implemented; using protocol v1"
+                );
+            }
+            self.protocol_version = 1;
         }
 
         if !self.prefer_ip_version.is_empty()
@@ -380,7 +393,7 @@ mod tests {
         assert_eq!(config.reconnect_interval, 5);
         assert_eq!(config.info_report_interval, 5);
         assert_eq!(config.month_rotate, 0);
-        assert_eq!(config.protocol_version, 2);
+        assert_eq!(config.protocol_version, 1);
         assert!(!config.ignore_unsafe_cert);
         assert!(!config.disable_auto_update);
         assert!(!config.disable_compression);
@@ -448,12 +461,27 @@ mod tests {
 
         assert_eq!(config.token, "env-token", "environment wins over file");
         assert_eq!(config.interval, 3.0, "environment wins over file");
-        assert_eq!(config.protocol_version, 2);
+        assert_eq!(config.protocol_version, 1);
         assert_eq!(config.endpoint, "https://file.example.com");
         assert_eq!(config.max_retries, 5);
         assert!(config.memory_include_cache);
         assert_eq!(config.custom_ipv6, "2001:db8::1");
         assert_eq!(config.config_file, file.path().to_string_lossy());
+    }
+
+    #[test]
+    fn protocol_version_two_is_downgraded_to_v1() {
+        for requested in [0, 1, 2, 2147483648] {
+            let cli = CliOverrides {
+                protocol_version: Some(requested),
+                ..CliOverrides::default()
+            };
+            let config = Config::load_with_env(cli, &no_env).expect("config should load");
+            assert_eq!(
+                config.protocol_version, 1,
+                "requested protocol version {requested} must resolve to v1"
+            );
+        }
     }
 
     #[test]

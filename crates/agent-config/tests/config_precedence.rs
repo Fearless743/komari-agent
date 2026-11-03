@@ -60,7 +60,10 @@ fn precedence_is_flags_then_env_then_file_then_defaults() {
     assert_eq!(config.interval, 2.5);
     // Environment beats file.
     assert_eq!(config.token, "env-token");
-    assert_eq!(config.protocol_version, 2);
+    assert_eq!(
+        config.protocol_version, 1,
+        "explicit v2 is downgraded to v1"
+    );
     assert_eq!(config.custom_dns, "8.8.8.8");
     // File beats default.
     assert_eq!(config.endpoint, "https://file.example.com");
@@ -191,7 +194,10 @@ fn integer_values_beyond_32_bits_are_supported() {
     let config = Config::load_with_env(CliOverrides::default(), &env).expect("config should load");
 
     assert_eq!(config.max_retries, 4_294_967_296);
-    assert_eq!(config.protocol_version, 2_147_483_648);
+    assert_eq!(
+        config.protocol_version, 1,
+        "any protocol version >= 2 is downgraded to v1"
+    );
 }
 
 #[test]
