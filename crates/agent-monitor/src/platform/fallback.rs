@@ -104,6 +104,55 @@ pub(crate) fn uptime() -> u64 {
     System::uptime().unwrap_or(0)
 }
 
+/// Partition table and usage from `sysinfo`.
+///
+/// Used on non-Linux platforms and as the local fallback when the injected
+/// proc mount has no readable mount table.
+pub(crate) fn disk_partitions() -> Vec<(crate::disk::PartitionStat, crate::disk::DiskUsage)> {
+    let Ok(disks) = sysinfo::Disks::new_with_refreshed_list() else {
+        return Vec::new();
+    };
+
+    disks
+        .iter()
+        .map(|disk| {
+            let part = crate::disk::PartitionStat {
+                device: disk.name().to_string_lossy().into_owned(),
+                mountpoint: disk.mount_point().to_string_lossy().into_owned(),
+                fstype: disk.file_system().to_string_lossy().into_owned(),
+                opts: Vec::new(),
+            };
+            let usage = crate::disk::DiskUsage {
+                total: disk.total_space(),
+                used: disk.total_space().saturating_sub(disk.available_space()),
+            };
+            (part, usage)
+        })
+        .collect()
+}
+
+/// Cumulative network counters from `sysinfo`.
+///
+/// `sysinfo` tracks traffic since it first observed an interface, not the
+/// kernel's lifetime counters; the delta calculation in the collector is
+/// unaffected.
+pub(crate) fn network_counters() -> Vec<crate::types::InterfaceCounters> {
+    let Ok(networks) = sysinfo::Networks::new_with_refreshed_list() else {
+        return Vec::new();
+    };
+
+    networks
+        .iter()
+        .map(|(name, data)| crate::types::InterfaceCounters {
+            name: name.to_string_lossy().into_owned(),
+            rx_bytes: data.total_received(),
+            rx_packets: data.total_packets_received(),
+            tx_bytes: data.total_transmitted(),
+            tx_packets: data.total_packets_transmitted(),
+        })
+        .collect()
+}
+
 /// Best-effort OS name for non-Linux platforms.
 #[cfg(target_os = "linux")]
 pub(crate) fn os_name() -> String {

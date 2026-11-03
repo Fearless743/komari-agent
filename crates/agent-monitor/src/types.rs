@@ -8,7 +8,7 @@
 //!   `ram`, `swap` and `load` objects built by `monitoring.GenerateReport`.
 //! - [`BasicInfo`] uses the keys uploaded by `server.uploadBasicInfo`.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// CPU information, mirroring Go's `monitoring.CpuInfo`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -126,10 +126,157 @@ pub struct RamReport {
     pub used: u64,
 }
 
+/// Disk usage totals, matching Go's `monitoring.DiskInfo` / the `disk` section
+/// of `GenerateReport`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiskInfo {
+    pub total: u64,
+    pub used: u64,
+}
+
+/// Per-interface cumulative counters read from `/proc/net/dev` (or `sysinfo`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InterfaceCounters {
+    pub name: String,
+    pub rx_bytes: u64,
+    pub rx_packets: u64,
+    pub tx_bytes: u64,
+    pub tx_packets: u64,
+}
+
+/// Network transfer rates and cumulative counters.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NetworkSpeed {
+    /// Bytes per second since the previous sample.
+    pub up: u64,
+    /// Bytes per second since the previous sample.
+    pub down: u64,
+    /// Cumulative transmitted bytes of the selected interfaces.
+    pub total_up: u64,
+    /// Cumulative received bytes of the selected interfaces.
+    pub total_down: u64,
+}
+
+/// `network` object of the periodic report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkReport {
+    /// Upload rate, bytes per second.
+    pub up: u64,
+    /// Download rate, bytes per second.
+    pub down: u64,
+    /// Cumulative upload bytes (`totalUp` on the wire).
+    #[serde(rename = "totalUp")]
+    pub total_up: u64,
+    /// Cumulative download bytes (`totalDown` on the wire).
+    #[serde(rename = "totalDown")]
+    pub total_down: u64,
+}
+
+impl From<NetworkSpeed> for NetworkReport {
+    fn from(speed: NetworkSpeed) -> Self {
+        Self {
+            up: speed.up,
+            down: speed.down,
+            total_up: speed.total_up,
+            total_down: speed.total_down,
+        }
+    }
+}
+
+/// Socket counts from `/proc/net/{tcp,tcp6,udp,udp6}`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionsCount {
+    pub tcp: i64,
+    pub udp: i64,
+}
+
+/// `connections` object of the periodic report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionsReport {
+    pub tcp: i64,
+    pub udp: i64,
+}
+
+impl From<ConnectionsCount> for ConnectionsReport {
+    fn from(count: ConnectionsCount) -> Self {
+        Self {
+            tcp: count.tcp,
+            udp: count.udp,
+        }
+    }
+}
+
+/// One GPU described by Go's `monitoring.DetailedGPUInfo` / `GPUInfo`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GpuInfo {
+    pub name: String,
+    pub memory_total: u64,
+    pub memory_used: u64,
+    pub utilization: f64,
+    pub temperature: u64,
+}
+
+/// `gpu` object of the periodic report.
+///
+/// Go emits two shapes:
+///
+/// * detailed: `{"count":N,"average_usage":X,"detailed_info":[...]}`
+/// * models only: `{"models":["..."]}`
+///
+/// Optional fields make both shapes expressible without losing a present zero
+/// value such as `average_usage: 0.0`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GpuReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub average_usage: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detailed_info: Option<Vec<GpuInfo>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<String>>,
+}
+
+impl GpuReport {
+    /// Build the detailed shape. Returns `None` when no GPU was reported, so
+    /// the report omits `gpu` instead of emitting a divide-by-zero average.
+    pub fn detailed(devices: Vec<GpuInfo>) -> Option<Self> {
+        if devices.is_empty() {
+            return None;
+        }
+        let average_usage =
+            devices.iter().map(|gpu| gpu.utilization).sum::<f64>() / devices.len() as f64;
+        Some(Self {
+            count: Some(i64::try_from(devices.len()).unwrap_or(i64::MAX)),
+            average_usage: Some(average_usage),
+            detailed_info: Some(devices),
+            models: None,
+        })
+    }
+
+    /// Build the model-only fallback shape.
+    pub fn models(models: Vec<String>) -> Option<Self> {
+        let models: Vec<String> = models
+            .into_iter()
+            .map(|model| model.trim().to_owned())
+            .filter(|model| !model.is_empty())
+            .collect();
+        if models.is_empty() {
+            return None;
+        }
+        Some(Self {
+            count: None,
+            average_usage: None,
+            detailed_info: None,
+            models: Some(models),
+        })
+    }
+}
+
 /// Metrics collected for the periodic report.
 ///
-/// This is the A02 subset of Go's `monitoring.GenerateReport()` and serializes
-/// with the same wire shape for the fields it owns:
+/// This serializes with the same wire shape as Go's
+/// `monitoring.GenerateReport()`:
 ///
 /// ```json
 /// {
@@ -137,20 +284,36 @@ pub struct RamReport {
 ///   "ram": {"total": 0, "used": 0},
 ///   "swap": {"total": 0, "used": 0},
 ///   "load": {"load1": 0.0, "load5": 0.0, "load15": 0.0},
-///   "uptime": 0
+///   "disk": {"total": 0, "used": 0},
+///   "network": {"up": 0, "down": 0, "totalUp": 0, "totalDown": 0},
+///   "connections": {"tcp": 0, "udp": 0},
+///   "uptime": 0,
+///   "process": 0,
+///   "message": ""
 /// }
 /// ```
 ///
-/// Disk, network, GPU, connections and process counts are added by later
-/// tasks. `Collector::collect_report_metrics()` does not probe OS or
-/// virtualization, so it is safe to call every reporting interval.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+/// `gpu` is absent unless [`MonitorOptions::enable_gpu`](crate::MonitorOptions::enable_gpu)
+/// is set and a GPU was detected. `Collector::collect_report_metrics()` does
+/// not probe OS or virtualization, so it is safe to call every reporting
+/// interval.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ReportMetrics {
     pub cpu: CpuReport,
     pub ram: RamReport,
     pub swap: RamReport,
     pub load: LoadAverage,
+    pub disk: DiskInfo,
+    pub network: NetworkReport,
+    pub connections: ConnectionsReport,
+    /// Only present when detailed GPU probing produced a result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<GpuReport>,
     pub uptime: u64,
+    /// Number of processes, matching Go's `int` (`i64` here).
+    pub process: i64,
+    /// Diagnostics accumulated while collecting, mirroring Go's `message`.
+    pub message: String,
 }
 
 /// Operating system information.
@@ -174,6 +337,8 @@ pub struct BasicInfo {
     pub kernel_version: String,
     pub mem_total: u64,
     pub swap_total: u64,
+    pub disk_total: u64,
+    pub gpu_name: String,
     pub virtualization: String,
 }
 
@@ -182,8 +347,7 @@ pub struct BasicInfo {
 /// This is a convenience aggregate for diagnostics and tests, **not** the
 /// protocol wire format: [`CpuInfo`] serializes Go's `monitoring.CpuInfo` keys
 /// (`cpu_usage`, `cpu_cores`, ...), while the periodic report uses
-/// [`ReportMetrics`] (`cpu.usage`). Disk, network and GPU collection live in
-/// A03; IP addresses and process counts are added by later tasks.
+/// [`ReportMetrics`] (`cpu.usage`). IP addresses are added by a later task.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SystemSnapshot {
     pub cpu: CpuInfo,
@@ -192,6 +356,16 @@ pub struct SystemSnapshot {
     pub memory: MemoryInfo,
     pub swap: SwapInfo,
     pub load: LoadAverage,
+    pub disk: DiskInfo,
+    pub network: NetworkReport,
+    pub connections: ConnectionsReport,
+    pub process: i64,
+    /// Basic GPU model string (`None` when undetectable), matching Go's
+    /// `GpuName()`.
+    pub gpu_name: String,
+    /// Detailed/model-only GPU report when `enable_gpu` is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<GpuReport>,
     pub os: OsInfo,
     /// Seconds since boot.
     pub uptime: u64,
