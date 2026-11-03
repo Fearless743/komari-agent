@@ -76,7 +76,8 @@ Go 版 `komari-agent` 没有 manifest 接口或 manifest 文件：自动发现�
 
 | Go 行为 | Rust 实现 |
 | --- | --- |
-| `parseVersion` 去掉单个 `v`/`V`，tolerant SemVer | `parse_version`，支持 `1`、`1.2`、预发布、构建元数据 |
+| `parseVersion` 去掉单个 `v`/`V`，tolerant SemVer | `parse_version`，支持 `1`、`1.2`、预发布、构建元数据；短版本带预发布/构建元数据会拒绝（与 `ParseTolerant` 一致） |
+| release tag 用 `\d+\.\d+\.\d+` 找首个三段版本并去任意前缀 | `parse_release_version`：接受 `release-1.2.3`，拒绝 `1.2`；严格三段后接可选的预发布/构建元数据 |
 | `UpdateSelf` 用 `Equals` 判断是否已是最新（不阻止降级） | `need_update` 使用 `cmp_precedence`，只在新版本更高时更新；**Rust 不会降级**（D-008） |
 | `go-github-selfupdate` 拉 release 列表并按语义版本选最高 | `Updater::check_latest` 查询 `GET /repos/{repo}/releases?per_page=100`，跳过 draft/prerelease，选择最高且含匹配 asset 的 release |
 | 按 `GOOS`/`GOARCH` 选择 asset | `select_asset` 使用规范名白名单：Unix 仅 `komari-agent-{os}-{arch}`，Windows 仅 `.exe` |
