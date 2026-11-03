@@ -10,6 +10,10 @@ use std::path::Path;
 use crate::error::MonitorError;
 
 /// Raw CPU time counters from `/proc/stat`, in jiffies.
+///
+/// `guest` and `guest_nice` are already included in `user`/`nice` by the
+/// kernel; they are parsed separately so they can be excluded from host busy
+/// time, matching gopsutil's Linux calculation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CpuTimes {
     pub user: u64,
@@ -20,6 +24,8 @@ pub struct CpuTimes {
     pub irq: u64,
     pub softirq: u64,
     pub steal: u64,
+    pub guest: u64,
+    pub guest_nice: u64,
 }
 
 impl CpuTimes {
@@ -34,10 +40,16 @@ impl CpuTimes {
             irq: field(5),
             softirq: field(6),
             steal: field(7),
+            guest: field(8),
+            guest_nice: field(9),
         }
     }
 
-    /// Total non-guest CPU time.
+    /// Total host CPU time, excluding guest/guest_nice time.
+    ///
+    /// The kernel folds guest time into `user`/`nice`, so the guest counters
+    /// must be subtracted for the host-visible total. gopsutil does the same in
+    /// `getAllBusy` on Linux.
     pub fn total(self) -> u64 {
         self.user
             .saturating_add(self.nice)
@@ -47,6 +59,8 @@ impl CpuTimes {
             .saturating_add(self.irq)
             .saturating_add(self.softirq)
             .saturating_add(self.steal)
+            .saturating_sub(self.guest)
+            .saturating_sub(self.guest_nice)
     }
 
     /// Idle time, counting iowait as idle like the Go/gopsutil calculation.

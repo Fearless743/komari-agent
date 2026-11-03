@@ -271,9 +271,8 @@ fn proc_text_parsers_reject_malformed_input() {
     assert!(parse_proc_stat("intr 1 2 3\n").is_err());
     assert!(parse_proc_stat("cpu 1 2\n").is_err());
 
-    let stat =
-        parse_proc_stat("cpu 1 2 3 4 5 6 7 8 9 10\ncpu0 1 2 3 4\ncpu1 5 6 7 8\nweird 0 0 0 0\n")
-            .unwrap();
+    let stat = parse_proc_stat("cpu 1 2 3 4 5 6 7 8\ncpu0 1 2 3 4\ncpu1 5 6 7 8\nweird 0 0 0 0\n")
+        .unwrap();
     assert_eq!(stat.cores.len(), 2);
     assert_eq!(stat.aggregate.total(), 36);
     assert_eq!(stat.aggregate.idle_total(), 9);
@@ -288,6 +287,26 @@ fn proc_text_parsers_reject_malformed_input() {
     assert!(parse_uptime("").is_err());
     assert!(parse_uptime("-1 100").is_err());
     assert!(parse_uptime("nope 1").is_err());
+}
+
+#[test]
+fn guest_time_is_excluded_from_host_cpu_usage() {
+    // Realistic kernel accounting: the guest increment is folded into user, so
+    // both `user` and `guest` grow. Host busy time must stay unchanged.
+    let previous =
+        parse_proc_stat("cpu 100 0 0 1000 0 0 0 0 0 0\ncpu0 50 0 0 500 0 0 0 0 0 0\n").unwrap();
+    let current =
+        parse_proc_stat("cpu 200 0 0 1000 0 0 0 0 100 0\ncpu0 100 0 0 500 0 0 0 0 50 0\n").unwrap();
+
+    assert_eq!(previous.aggregate.total(), current.aggregate.total());
+    let usage = agent_monitor::usage_between(&previous, &current);
+    assert_eq!(usage.total, 0.0);
+    assert_eq!(usage.per_core, vec![0.0]);
+
+    // guest_nice is also excluded.
+    let previous = parse_proc_stat("cpu 100 50 0 1000 0 0 0 0 10 5\n").unwrap();
+    let current = parse_proc_stat("cpu 100 100 0 1000 0 0 0 0 10 55\n").unwrap();
+    assert_eq!(agent_monitor::usage_between(&previous, &current).total, 0.0);
 }
 
 #[test]
