@@ -894,7 +894,11 @@ PY
             die "Failed to merge $file with python3; the original file was not changed"
         fi
     else
-        fallback_rewrite_config "$file" "$tmp"
+        if ! fallback_rewrite_config "$file" "$tmp"; then
+            rm -f "$tmp" "$backup" "$base_tmp"
+            umask "$old_umask"
+            die "Failed to rewrite $file; the original file was not changed"
+        fi
     fi
 
     if ! config_validate "$tmp"; then

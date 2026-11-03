@@ -260,7 +260,12 @@ function Write-AgentConfig {
 
     $json = $config | ConvertTo-Json -Depth 10
     # Validate the serialized form before touching the existing file.
-    $null = $json | ConvertFrom-Json
+    try {
+        $null = $json | ConvertFrom-Json
+    }
+    catch {
+        Fail "Generated config is not valid JSON; $ConfigPath was not changed: $_"
+    }
 
     $utf8 = New-Object System.Text.UTF8Encoding -ArgumentList $false
     $tempConfig = "$ConfigPath.tmp.$PID"
