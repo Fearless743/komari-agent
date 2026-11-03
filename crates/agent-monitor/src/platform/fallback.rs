@@ -109,27 +109,28 @@ pub(crate) fn uptime() -> u64 {
 /// Used on non-Linux platforms and as the local fallback when the injected
 /// proc mount has no readable mount table.
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn disk_partitions() -> Vec<(crate::disk::PartitionStat, crate::disk::DiskUsage)> {
-    let Ok(disks) = sysinfo::Disks::new_with_refreshed_list() else {
-        return Vec::new();
-    };
+pub(crate) fn disk_partitions() -> Option<Vec<(crate::disk::PartitionStat, crate::disk::DiskUsage)>>
+{
+    let disks = sysinfo::Disks::new_with_refreshed_list().ok()?;
 
-    disks
-        .iter()
-        .map(|disk| {
-            let part = crate::disk::PartitionStat {
-                device: disk.name().to_string_lossy().into_owned(),
-                mountpoint: disk.mount_point().to_string_lossy().into_owned(),
-                fstype: disk.file_system().to_string_lossy().into_owned(),
-                opts: Vec::new(),
-            };
-            let usage = crate::disk::DiskUsage {
-                total: disk.total_space(),
-                used: disk.total_space().saturating_sub(disk.available_space()),
-            };
-            (part, usage)
-        })
-        .collect()
+    Some(
+        disks
+            .iter()
+            .map(|disk| {
+                let part = crate::disk::PartitionStat {
+                    device: disk.name().to_string_lossy().into_owned(),
+                    mountpoint: disk.mount_point().to_string_lossy().into_owned(),
+                    fstype: disk.file_system().to_string_lossy().into_owned(),
+                    opts: Vec::new(),
+                };
+                let usage = crate::disk::DiskUsage {
+                    total: disk.total_space(),
+                    used: disk.total_space().saturating_sub(disk.available_space()),
+                };
+                (part, usage)
+            })
+            .collect(),
+    )
 }
 
 /// Cumulative network counters from `sysinfo`.

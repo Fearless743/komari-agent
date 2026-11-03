@@ -5,9 +5,9 @@
 //! partitions, filter pseudo filesystems and aggregate physical devices,
 //! deduplicating by device (ZFS datasets collapse to their pool).
 //!
-//! On Linux the partition table comes from the injected proc root
-//! (`<proc_root>/mounts`, falling back to `<proc_root>/self/mounts`) and usage
-//! is read with `statvfs`. Other platforms use `sysinfo`.
+//! On Linux the partition table comes from the injected proc root, following
+//! gopsutil's fallback chain: `1/mountinfo`, `1/mounts`, `self/mountinfo`,
+//! `self/mounts`. Usage is read with `statvfs`. Other platforms use `sysinfo`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -289,7 +289,11 @@ pub(crate) fn collect(options: &MonitorOptions) -> DiskInfo {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let parts = crate::platform::fallback::disk_partitions();
+        // Like Go's disk.Partitions, a failed partition table makes the whole
+        // collection zero, even when an include list is configured.
+        let Some(parts) = crate::platform::fallback::disk_partitions() else {
+            return DiskInfo::default();
+        };
         if !options.include_mountpoints.is_empty() {
             let usages: Vec<DiskUsage> = included
                 .iter()
@@ -315,19 +319,22 @@ pub(crate) fn collect(options: &MonitorOptions) -> DiskInfo {
 
 #[cfg(target_os = "linux")]
 fn read_linux_mounts(options: &MonitorOptions) -> Option<Vec<PartitionStat>> {
-    // gopsutil reads /proc/1/mountinfo first, then falls back to /proc/mounts.
-    let mountinfo = options.proc_path("1/mountinfo");
-    if let Ok(content) = std::fs::read_to_string(&mountinfo) {
-        let parts = parse_mountinfo(&content);
-        if !parts.is_empty() {
-            return Some(parts);
-        }
-    }
-
-    for relative in ["mounts", "self/mounts"] {
+    // gopsutil's Linux order: 1/mountinfo, 1/mounts, self/mountinfo,
+    // self/mounts.
+    let sources = [
+        ("1/mountinfo", true),
+        ("1/mounts", false),
+        ("self/mountinfo", true),
+        ("self/mounts", false),
+    ];
+    for (relative, is_mountinfo) in sources {
         let path = options.proc_path(relative);
         if let Ok(content) = std::fs::read_to_string(&path) {
-            let parts = parse_mounts(&content);
+            let parts = if is_mountinfo {
+                parse_mountinfo(&content)
+            } else {
+                parse_mounts(&content)
+            };
             if !parts.is_empty() {
                 return Some(parts);
             }
