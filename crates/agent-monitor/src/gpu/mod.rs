@@ -1,21 +1,30 @@
-#![cfg_attr(target_os = "windows", allow(dead_code))]
 //! GPU collection.
 //!
 //! Corresponds to `monitoring/unit/gpu*.go`:
 //!
 //! * [`name`] detects the model string for basic info (`lspci` -> sysfs on
-//!   Linux, `system_profiler` / `pciconf` elsewhere);
+//!   Linux, `system_profiler` / `pciconf` elsewhere, DXGI on Windows);
 //! * detailed probing prefers `nvidia-smi`, falls back to `rocm-smi`, and
 //!   emits Go's two wire shapes (detailed info, or a `models` list only);
 //! * a missing tool or a failed probe degrades to no `gpu` object without
 //!   affecting other metrics.
+//!
+//! [`windows`] exposes the raw DXGI adapter list (name, vendor/device IDs and
+//! dedicated/shared memory) used by the basic-info name.
 
 pub mod amd;
+#[cfg(any(windows, test))]
+pub(crate) mod dxgi;
 pub mod name;
 pub mod nvidia;
+#[cfg(windows)]
+pub mod windows;
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use std::ffi::OsString;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use std::process::Command;
 
 use crate::options::MonitorOptions;
@@ -94,6 +103,7 @@ fn probe(_options: &MonitorOptions) -> (Result<Vec<GpuInfo>, String>, Result<Vec
 
 /// Locate a tool: an explicit path wins, then `gpu_tool_path` (or the process
 /// `PATH` when no override is configured).
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 pub(crate) fn locate_tool(
     options: &MonitorOptions,
     explicit: Option<&Path>,
@@ -132,6 +142,7 @@ pub(crate) fn locate_tool(
 }
 
 /// Run a command and return its output on success.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 pub(crate) fn run_tool(
     options: &MonitorOptions,
     explicit: Option<&Path>,
@@ -142,6 +153,7 @@ pub(crate) fn run_tool(
     run_binary(&binary, args)
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn run_binary(binary: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new(binary).args(args).output().ok()?;
     if !output.status.success() {

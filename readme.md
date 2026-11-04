@@ -427,6 +427,8 @@ komari-agent-freebsd-arm64   komari-agent-freebsd-386
 
 FreeBSD/arm 不发布：`armv7-unknown-freebsd` 是 tier 3 target，rustup 不提供
 预编译 std。该差异登记为 D-024；安装脚本在 FreeBSD/arm 上会给出明确错误。
+nightly + `rust-src` + `-Z build-std` 可以交叉检查 `agent-monitor`，但完整 CLI 仍需
+FreeBSD/armv7 的 C 交叉工具链（`aws-lc-sys`），因此发布矩阵保持不含该目标。
 
 | 变量 | 作用 |
 | --- | --- |
@@ -525,6 +527,10 @@ uptime 与虚拟化的采集：
   `collect_basic_info()`；`collect()` 仅用于诊断。
 - 磁盘、网络、月流量、连接/进程数与 GPU 采集已接入 `collect_report_metrics()` 与
   `collect_basic_info()`（`disk_total`、`gpu_name`）。A05 只保留 IP-only 采集（D-019）。
+- 非 Linux 平台路径：Windows 使用 DXGI 枚举 GPU（含显存）、IP Helper 统计连接数、
+  `K32EnumProcesses` 统计进程；macOS/FreeBSD 使用 `system_profiler`/`pciconf`、
+  `lsof` 与 `ps`。这些路径只做了交叉编译检查，未在目标系统实测，详见 crate README
+  的“平台验证状态”。
 
 详见 [`crates/agent-monitor/README.md`](crates/agent-monitor/README.md)。
 
