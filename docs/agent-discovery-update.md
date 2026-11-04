@@ -34,41 +34,22 @@ DNS 错误分类（`DnsError`）：`Timeout`、`NxDomain`、`ServFail`、`Refuse
   Go 只回退到内置列表；系统解析器是任务要求的额外最后兜底。
 - `NXDOMAIN` 视为权威结果，不再尝试其他 DNS 服务器。
 
-### 自动发现
-
-对应 Go：`cmd/autodiscovery.go`。
-
-流程与 Go 一致：
-
-1. 从可执行文件同目录的 `auto-discovery.json` 读取 `{uuid, token}`；
-2. 文件不存在或损坏时向 `{endpoint}/api/clients/register?name={hostname}` 发送
-   `POST {"key":"..."}`；
-3. 校验 HTTP 状态必须为 `200`、`status` 必须为 `success`；
-4. 以两空格缩进 JSON 保存 `{uuid, token}`，并返回 `DiscoveryResult { endpoint, config, registered }`
-   供调用方直接用于后续面板连接。
-
-请求头：
-
-- `Content-Type: application/json`
-- `Authorization: Bearer <auto_discovery_key>`
-- `CF-Access-Client-Id` / `CF-Access-Client-Secret`（两者均非空时）
+### HTTP 传输
 
 HTTP 传输可注入（`HttpClient` trait）。默认实现 `ReqwestHttpClient` 使用单个
 `reqwest::Client`，通过 reqwest 的 `dns_resolver` 钩子接入 `DnsResolver`。DNS 解析发生在连接层，
 因此：
-- 非幂等 POST 不会因为手工按 IP 重发而在响应读取失败后重复注册；
 - 重定向目标也走同一个自定义解析器；
 - 整个 `execute` 外层还有统一超时，DNS、建连、TLS 和读取 body 都受同一个 deadline 约束。
 endpoint 中的国际化域名会先转换为 Punycode。
 
-`auto-discovery.json` 的默认位置是当前可执行文件所在目录；测试通过
-`AutoDiscoveryOptions::config_path` 注入临时路径，不会写入真实目录。
+`agent-client` 的 `BasicInfoUploader` 与 `agent-cli` 的 `RuntimeDeps::production`
+通过该传输发送请求，调用方可注入 mock 实现进行测试。
 
 ### 关于 “manifest”
 
-Go 版 `komari-agent` 没有 manifest 接口或 manifest 文件：自动发现只持久化
-`auto-discovery.json`，更新只访问 GitHub Releases API。Rust 版本保持同样范围，
-未额外引入 manifest 协议。
+Go 版 `komari-agent` 没有 manifest 接口或 manifest 文件：更新只访问
+GitHub Releases API。Rust 版本保持同样范围，未额外引入 manifest 协议。
 
 ## agent-update
 
@@ -105,13 +86,10 @@ cargo test -p agent-discovery -p agent-update
 
 - DNS：本地 mock UDP 服务器覆盖 A/AAAA、IPv4/IPv6 排序、NXDOMAIN、超时、截断、
   SERVFAIL 回退、系统解析器兜底、IP 字面量；纯函数覆盖报文解析与服务器地址规范化。
-- 自动发现：手写本地 HTTP/1.1 服务器覆盖成功保存、401、非法 JSON、业务失败、超时、
-  已有配置短路、损坏配置重建。
 - 更新：注入 `UpdateHttp` 覆盖版本表、release 列表选择（draft/prerelease/无 asset）、
   非 2xx、非法 JSON、缺 asset、下载传输失败、大小/校验和不匹配、HTML 拒绝、超大下载、
   成功替换与权限保留；真实 `reqwest` 传输覆盖重定向、超时、Content-Length 预检和流式超限；
   另用 mock DNS 验证自定义 DNS 客户端可解析更新主机。
-- 自动发现额外覆盖 IDN endpoint + 尾斜杠 + 自定义 DNS 的端到端注册。
 - 所有替换测试都在 `tempfile::tempdir()` 中进行，不会触碰测试进程二进制。
 
 ## 已知限制

@@ -15,14 +15,6 @@ use serde::Deserialize;
 pub struct CliOverrides {
     #[arg(
         global = true,
-        long = "auto-discovery",
-        value_name = "KEY",
-        help = "Auto discovery key for the agent"
-    )]
-    pub auto_discovery_key: Option<String>,
-
-    #[arg(
-        global = true,
         long = "disable-auto-update",
         num_args = 0..=1, require_equals = true,
         default_missing_value = "true",

@@ -46,13 +46,12 @@ RUN apt-get update \
 
 COPY --from=builder /out/komari-agent /app/komari-agent
 
-# The agent writes auto-discovery.json next to its executable and may replace
-# the executable during self-update, so /app belongs to the runtime user.
+# The agent may replace the executable during self-update, so /app belongs
+# to the runtime user.
 WORKDIR /app
 USER 10001:10001
 
-# Configuration volume. The only state the agent writes is auto-discovery.json,
-# which is created next to the executable in /app; see readme.md for details.
+# Configuration volume. See readme.md for details.
 VOLUME ["/etc/komari"]
 
 ENTRYPOINT ["/app/komari-agent"]

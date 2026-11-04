@@ -90,7 +90,7 @@ Unix 与 Windows 脚本使用同一套选项：
 | `--install-version VERSION` | 指定 Release tag，例如 `v0.2.0`；默认最新版 |
 | `--config FILE` | 使用已有配置文件，不再生成或改写 `<安装目录>/config.json`；此时 `--endpoint/--token/--interval` 会被忽略并告警 |
 | `--uninstall` | 停止并删除服务与二进制 |
-| `--purge` | 与 `--uninstall` 一起使用时，同时删除 `config.json` 与 `auto-discovery.json` |
+| `--purge` | 与 `--uninstall` 一起使用时，同时删除 `config.json` |
 | `--dry-run` | 只打印计划，不修改系统 |
 | `-h`, `--help` | 显示帮助 |
 
@@ -104,11 +104,11 @@ sudo ./install.sh --endpoint https://panel.example.com --token TOKEN \
 安全与幂等行为：
 
 - token 写入 `config.json`（`0600`），不会出现在安装日志、unit/nssm 参数或 `ps` 中；
-  自动发现生成的 `auto-discovery.json` 同样包含 token，因此安装目录使用 `0700`；
+  因此安装目录使用 `0700`；
 - 服务以收紧的 umask 运行：systemd `UMask=0077`，OpenRC/procd/upstart/FreeBSD rc.d
   `umask 077`，launchd `Umask=63`；Windows 安装目录和 `config.json` 通过 `icacls`
   限制为 `SYSTEM` 与 `Administrators`；
-- 启动日志与 `--help` 输出中的 `token`、`cf_access_client_secret`、`auto_discovery_key`
+- 启动日志与 `--help` 输出中的 `token`、`cf_access_client_secret`
   会被脱敏为 `******`；
 - 重复运行会停止旧服务、替换二进制，并用 `jq`/`python3` 合并配置，保留未被新参数覆盖的键；
   两者都不存在且已有非空配置时安装会中止并提示安装 `jq` 或 `python3`，避免丢失凭据/未知键；
@@ -154,7 +154,6 @@ AGENT_TOKEN=your-token AGENT_ENDPOINT=https://panel.example.com ./komari-agent
 
 | JSON 键 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `auto_discovery_key` | `AGENT_AUTO_DISCOVERY_KEY` | `""` | 自动发现密钥；设置后可省略 endpoint/token |
 | `disable_auto_update` | `AGENT_DISABLE_AUTO_UPDATE` | `false` | 关闭 6 小时自动更新 |
 | `memory_mode_available` | `AGENT_MEMORY_MODE_AVAILABLE` | `false` | 已弃用，仅为兼容保留 |
 | `token` | `AGENT_TOKEN` | `""` | 面板 token，日志脱敏 |
@@ -183,7 +182,7 @@ AGENT_TOKEN=your-token AGENT_ENDPOINT=https://panel.example.com ./komari-agent
 | `prefer_ip_version` | `AGENT_PREFER_IP_VERSION` | `""` | `4` 或 `6`，空为自动 |
 
 配置文件路径也可通过 `AGENT_CONFIG_FILE` 指定。完整 CLI 参数见 `komari-agent --help`，
-包括 `--auto-discovery`、`--include-nics`、`--exclude-nics`、`--include-mountpoint`、
+包括 `--include-nics`、`--exclude-nics`、`--include-mountpoint`、
 `--month-rotate`、`--cf-access-client-id`、`--cf-access-client-secret`、
 `--memory-include-cache`、`--memory-exclude-bcf`、`--custom-dns`、`--gpu`、
 `--custom-ipv4`、`--custom-ipv6`、`--get-ip-addr-from-nic`、`--protocol-version`、
@@ -273,8 +272,7 @@ EnvironmentFile=-/opt/komari/agent.env
 ## Docker 部署
 
 镜像以 UID/GID `10001` 非 root 运行，`/etc/komari` 为配置卷；`/app` 归运行用户所有，
-用于自动发现文件和自更新。agent 当前唯一的运行期状态是
-`/app/auto-discovery.json`（与可执行文件同目录），它不在数据卷中，容器重建后会丢失。
+用于自更新替换二进制。
 
 ### 使用配置文件
 
@@ -325,10 +323,6 @@ token 只在环境变量中，不会出现在容器命令行。也可以把 `AGE
 
 ### 说明
 
-- 自动发现文件 `auto-discovery.json` 固定写在可执行文件同目录（镜像内为
-  `/app/auto-discovery.json`），其中包含 token。容器重建后该文件不会保留；长期部署建议
-  显式配置 token，或确保自动发现注册可重复执行。不要为了持久化而挂载 `/app`，否则会
-  覆盖镜像内的二进制。
 - 自更新需要可写 `/app`。若以只读根文件系统运行，请设置 `disable_auto_update` 并自行管理镜像升级。
 - 镜像内不包含默认配置；未挂载配置且未提供 `AGENT_*` 时，agent 会以“缺少凭据”退出。
 
@@ -355,7 +349,7 @@ Windows 重新运行 `install.ps1` 即可。
 
 ```bash
 sudo ./install.sh --uninstall          # 删除服务与二进制，保留配置
-sudo ./install.sh --uninstall --purge  # 同时删除 config.json / auto-discovery.json
+sudo ./install.sh --uninstall --purge  # 同时删除 config.json
 ```
 
 Windows：
@@ -369,7 +363,7 @@ Windows：
 | 现象 | 排查方式 |
 | --- | --- |
 | 服务启动后立即退出 | `journalctl -u komari-agent -n 100`；检查 `config.json` 是否存在且为合法 JSON |
-| `missing credentials` | 设置 `endpoint` + `token`，或配置 `auto_discovery_key` |
+| `missing credentials` | 设置 `endpoint` + `token`（参数、环境变量或配置文件） |
 | 配置文件读取失败（退出码 `1`） | `--config`/`AGENT_CONFIG_FILE` 指向的文件不存在或无权限 |
 | 未知参数（退出码 `2`） | 删除拼写错误的 flag；布尔值使用 `true`/`false` |
 | 连接失败后反复重启 | 检查 `endpoint`、网络、TLS；必要时临时设置 `ignore_unsafe_cert=true` |
@@ -541,8 +535,8 @@ uptime 与虚拟化的采集：
 - `agent-discovery`
   - `dns`：自定义 DNS 服务器（`custom_dns`）、A/AAAA 查询、超时/NXDOMAIN/截断错误分类、
     IPv4/IPv6 优先排序、内置服务器与系统解析器回退。
-  - `autodiscovery`：读取/保存 `auto-discovery.json`，使用 `auto_discovery_key` 向面板注册，
-    支持 Cloudflare Access 头、IDN endpoint 与可注入 HTTP 传输。
+  - `http_client`：可注入的 HTTP 传输（`HttpClient`）与默认 `reqwest` 实现
+   （`ReqwestHttpClient`），支持 Cloudflare Access 头、IDN endpoint 与自定义 DNS 解析。
 - `agent-update`
   - 查询 GitHub Releases、SemVer 比较、按 `GOOS`/`GOARCH` 选择 asset、下载大小与可选
     SHA-256 校验、临时文件 + rename 原子替换并保留权限。
@@ -563,7 +557,7 @@ uptime 与虚拟化的采集：
 - 启动时先上传一次 `BasicInfoV1`（即使 WS 不可达也会上传），之后每
   `info_report_interval` 分钟由独立任务上传；失败时按 Go 语义去掉
   `kernel_version` / `cpu_physical_cores` 再试一次；
-- `auto_discovery_key` 存在时读取/写入 `auto-discovery.json`；启动时先同步检查一次更新
+- 启动时先同步检查一次更新
   （`Updated` 映射为退出码 42），随后由 `agent-update::run_periodic` 每 6 小时检查。
 
 WebSocket、时钟、HTTP 上传与指标源均为 trait，测试使用本地 mock server 或通道实现，

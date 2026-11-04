@@ -129,7 +129,7 @@ fn run_agent(overrides: CliOverrides) -> ExitCode {
 }
 
 async fn run(config: Config) -> Result<RunExit, agent_cli::RuntimeError> {
-    let config = resolve_config(config, None, None).await?;
+    let config = resolve_config(config).await?;
     let deps = RuntimeDeps::production(&config)?;
     run_with(config, deps).await
 }

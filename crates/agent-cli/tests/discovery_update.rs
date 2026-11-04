@@ -1,4 +1,4 @@
-//! Discovery, update and runtime wiring tests.
+//! Update and runtime wiring tests.
 //!
 //! HTTP is fully injected: no test talks to a real panel or GitHub.
 
@@ -6,129 +6,12 @@ use std::collections::VecDeque;
 use std::fs;
 use std::sync::{Arc, Mutex};
 
-use agent_cli::resolve_config;
-use agent_config::Config;
-use agent_discovery::{DiscoveryError, HttpClient, HttpRequest, HttpResponse};
 use agent_update::{
     HttpRequest as UpdateRequest, HttpResponse as UpdateResponse, Platform, RESTART_EXIT_CODE,
     UpdateError, UpdateHttp, UpdateOptions, Updater,
 };
 use async_trait::async_trait;
 use serde_json::json;
-
-#[derive(Default)]
-struct DiscoveryHttp {
-    requests: Mutex<Vec<HttpRequest>>,
-    replies: Mutex<VecDeque<HttpResponse>>,
-}
-
-#[async_trait]
-impl HttpClient for DiscoveryHttp {
-    async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, DiscoveryError> {
-        self.requests.lock().unwrap().push(request);
-        Ok(self
-            .replies
-            .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or(HttpResponse {
-                status: 200,
-                body: Vec::new(),
-            }))
-    }
-}
-
-fn config(key: &str, token: &str, endpoint: &str) -> Config {
-    Config {
-        auto_discovery_key: key.to_owned(),
-        token: token.to_owned(),
-        endpoint: endpoint.to_owned(),
-        ..Config::default()
-    }
-}
-
-#[tokio::test]
-async fn auto_discovery_registers_and_persists_credentials() {
-    let http = Arc::new(DiscoveryHttp::default());
-    http.replies.lock().unwrap().push_back(HttpResponse {
-        status: 200,
-        body: serde_json::to_vec(&json!({
-            "status": "success",
-            "message": "",
-            "data": {"uuid": "uuid-1", "token": "registered-token"}
-        }))
-        .unwrap(),
-    });
-
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("auto-discovery.json");
-
-    let resolved = resolve_config(
-        config("discovery-key", "", "https://panel.example/"),
-        Some(http.clone()),
-        Some(path.clone()),
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(resolved.token, "registered-token");
-    assert_eq!(resolved.endpoint, "https://panel.example/");
-
-    let requests = http.requests.lock().unwrap();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].method, "POST");
-    assert!(
-        requests[0]
-            .url
-            .starts_with("https://panel.example/api/clients/register?name="),
-        "{}",
-        requests[0].url
-    );
-    assert!(
-        requests[0]
-            .headers
-            .iter()
-            .any(|(name, value)| name == "Authorization" && value == "Bearer discovery-key")
-    );
-
-    let persisted: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(persisted["uuid"], "uuid-1");
-    assert_eq!(persisted["token"], "registered-token");
-}
-
-#[tokio::test]
-async fn existing_auto_discovery_file_skips_registration() {
-    let http = Arc::new(DiscoveryHttp::default());
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("auto-discovery.json");
-    fs::write(&path, br#"{"uuid":"old-uuid","token":"old-token"}"#).unwrap();
-
-    let resolved = resolve_config(
-        config("discovery-key", "", "https://panel.example"),
-        Some(http.clone()),
-        Some(path),
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(resolved.token, "old-token");
-    assert!(http.requests.lock().unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn configured_token_skips_auto_discovery() {
-    let http = Arc::new(DiscoveryHttp::default());
-    let resolved = resolve_config(
-        config("", "configured-token", "https://panel.example"),
-        Some(http.clone()),
-        None,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(resolved.token, "configured-token");
-    assert!(http.requests.lock().unwrap().is_empty());
-}
 
 struct UpdateHttpFake {
     replies: Mutex<VecDeque<UpdateResponse>>,

@@ -130,8 +130,7 @@ Install options:
   --config FILE               Use an existing config file instead of
                               generating <install-dir>/config.json
   --uninstall                 Stop and remove the service and the binary
-  --purge                     With --uninstall, also remove config.json and
-                              auto-discovery.json
+  --purge                     With --uninstall, also remove config.json
   --dry-run                   Print what would happen without changing anything
   -h, --help                  Show this help
 
@@ -1469,14 +1468,8 @@ ensure_target_dir() {
         local mode=""
         mode=$(stat -c %a "$TARGET_DIR" 2>/dev/null || stat -f %Lp "$TARGET_DIR" 2>/dev/null || true)
         if [ -n "$mode" ] && [ "$mode" != "700" ]; then
-            log_warning "Install directory $TARGET_DIR has mode $mode; changing to 700 because auto-discovery.json contains a token."
+            log_warning "Install directory $TARGET_DIR has mode $mode; changing to 700."
             chmod 700 "$TARGET_DIR" || die "Failed to set permissions on $TARGET_DIR"
-        fi
-        local discovery="$TARGET_DIR/auto-discovery.json"
-        if [ -e "$discovery" ] || [ -L "$discovery" ]; then
-            assert_safe_file "$discovery"
-            chmod 600 "$discovery" ||
-                die "Failed to set permissions on $discovery"
         fi
         return 0
     fi
@@ -1531,8 +1524,8 @@ do_uninstall() {
     fi
 
     if [ "$PURGE" = true ]; then
-        log_info "Removing configuration and state files"
-        run_cmd rm -f "$CONFIG_FILE" "$TARGET_DIR/auto-discovery.json"
+        log_info "Removing configuration file"
+        run_cmd rm -f "$CONFIG_FILE"
         if [ "$DRY_RUN" = false ]; then
             rmdir "$TARGET_DIR" 2>/dev/null || true
         fi

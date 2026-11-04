@@ -1,10 +1,9 @@
-//! Runtime assembly: discovery, dependency construction and the report loop.
+//! Runtime assembly: dependency construction and the report loop.
 //!
 //! Everything that touches the real system is built here. The individual
 //! pieces are injectable ([`RuntimeDeps`]) so tests can drive the full CLI
 //! wiring with mock transports.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,8 +13,7 @@ use agent_client::{
 };
 use agent_config::Config;
 use agent_discovery::{
-    AutoDiscovery, AutoDiscoveryOptions, DnsResolver, HttpClient, PreferIp, ReqwestHttpClient,
-    ResolverConfig, build_reqwest_client,
+    DnsResolver, HttpClient, PreferIp, ReqwestHttpClient, ResolverConfig, build_reqwest_client,
 };
 use agent_monitor::{Collector, MonitorOptions};
 use agent_update::{CHECK_INTERVAL, ReqwestUpdateHttp, UpdateHttp, UpdateOptions, Updater};
@@ -26,13 +24,8 @@ use crate::VERSION;
 /// Runtime failures that reach the top-level CLI.
 #[derive(Debug, Error)]
 pub enum RuntimeError {
-    #[error(
-        "missing credentials: set --token/--endpoint, environment variables or --auto-discovery"
-    )]
+    #[error("missing credentials: set --token/--endpoint or environment variables")]
     MissingCredentials,
-
-    #[error("auto-discovery failed: {0}")]
-    Discovery(#[from] agent_discovery::DiscoveryError),
 
     #[error("DNS configuration error: {0}")]
     Dns(#[from] agent_discovery::DnsError),
@@ -127,46 +120,11 @@ impl RuntimeDeps {
     }
 }
 
-/// Resolve credentials from `auto-discovery.json` or register a new client.
-pub async fn resolve_config(
-    mut config: Config,
-    http: Option<Arc<dyn HttpClient>>,
-    config_path: Option<PathBuf>,
-) -> Result<Config, RuntimeError> {
-    if config.auto_discovery_key.is_empty() {
-        if config.token.is_empty() || config.endpoint.is_empty() {
-            return Err(RuntimeError::MissingCredentials);
-        }
-        return Ok(config);
-    }
-
-    if config.endpoint.is_empty() {
+/// Resolve credentials: both `token` and `endpoint` must be set.
+pub async fn resolve_config(config: Config) -> Result<Config, RuntimeError> {
+    if config.token.is_empty() || config.endpoint.is_empty() {
         return Err(RuntimeError::MissingCredentials);
     }
-
-    let options = AutoDiscoveryOptions {
-        endpoint: config.endpoint.clone(),
-        auto_discovery_key: config.auto_discovery_key.clone(),
-        config_path,
-        cf_access_client_id: config.cf_access_client_id.clone(),
-        cf_access_client_secret: config.cf_access_client_secret.clone(),
-        timeout: Duration::from_secs(30),
-        ignore_unsafe_cert: config.ignore_unsafe_cert,
-        prefer_ip: prefer_ip(&config)?,
-        custom_dns: non_empty(&config.custom_dns),
-        http,
-        ..AutoDiscoveryOptions::default()
-    };
-
-    let discovery = AutoDiscovery::new(options)?;
-    let result = discovery.handle().await?;
-    config.token = result.config.token;
-    config.endpoint = result.endpoint;
-
-    if config.token.is_empty() {
-        return Err(RuntimeError::MissingCredentials);
-    }
-
     Ok(config)
 }
 
@@ -358,9 +316,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_credentials_are_rejected_before_any_request() {
-        let error = resolve_config(Config::default(), None, None)
-            .await
-            .unwrap_err();
+        let error = resolve_config(Config::default()).await.unwrap_err();
         assert!(matches!(error, RuntimeError::MissingCredentials));
     }
 }

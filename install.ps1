@@ -48,8 +48,7 @@ Install options:
   --config FILE               Use an existing config file instead of
                               generating <install-dir>\config.json
   --uninstall                 Stop and remove the service and the binary
-  --purge                     With --uninstall, also remove config.json and
-                              auto-discovery.json
+  --purge                     With --uninstall, also remove config.json
   --dry-run                   Print what would happen without changing anything
   -h, --help                  Show this help
 
@@ -548,13 +547,9 @@ function Uninstall-Agent {
     Stop-PreviousService -Nssm $Nssm
 
     if ($Purge) {
-        Write-Info 'Removing configuration and state files...'
+        Write-Info 'Removing configuration file...'
         if (Test-Path -LiteralPath $ConfigPath) {
             Remove-Item -LiteralPath $ConfigPath -Force
-        }
-        $discovery = Join-Path $InstallDir 'auto-discovery.json'
-        if (Test-Path -LiteralPath $discovery) {
-            Remove-Item -LiteralPath $discovery -Force
         }
     }
 
@@ -623,7 +618,7 @@ if ($Uninstall) {
         Write-Info "[dry-run] would stop and remove service $ServiceName"
         Write-Info "[dry-run] would remove $AgentPath"
         if ($Purge) {
-            Write-Info "[dry-run] would remove $ConfigPath and auto-discovery.json"
+            Write-Info "[dry-run] would remove $ConfigPath"
         }
         Write-Success 'Dry run completed; nothing was changed.'
         exit 0
@@ -644,16 +639,6 @@ if (-not $DryRun) {
         }
         catch {
             Fail "Failed to restrict the install directory ACL: $_"
-        }
-    }
-
-    $discovery = Join-Path $InstallDir 'auto-discovery.json'
-    if (Test-Path -LiteralPath $discovery) {
-        try {
-            Set-PathAcl -Path $discovery
-        }
-        catch {
-            Fail "Failed to restrict the auto-discovery file ACL: $_"
         }
     }
 }

@@ -1,8 +1,7 @@
 //! Library support for the `komari-agent` binary.
 //!
 //! Holds the version constants, tracing initialisation, the runtime assembly
-//! (`discovery`, WebSocket client, update loop) and the two diagnostic
-//! subcommands.
+//! (WebSocket client, update loop) and the two diagnostic subcommands.
 
 pub mod commands;
 pub mod runtime;

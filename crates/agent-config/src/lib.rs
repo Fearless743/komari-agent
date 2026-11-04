@@ -37,7 +37,6 @@ const MASK: &str = "******";
 /// [`Config::protocol_version`] (v2 is not implemented; see the crate docs).
 #[derive(Clone)]
 pub struct Config {
-    pub auto_discovery_key: String,
     pub disable_auto_update: bool,
     /// Deprecated, use [`Config::memory_include_cache`] instead.
     pub memory_mode_available: bool,
@@ -71,7 +70,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            auto_discovery_key: String::new(),
             disable_auto_update: false,
             memory_mode_available: false,
             token: String::new(),
@@ -171,7 +169,6 @@ impl Config {
             };
         }
 
-        string!(auto_discovery_key, "AGENT_AUTO_DISCOVERY_KEY");
         boolean!(disable_auto_update, "AGENT_DISABLE_AUTO_UPDATE");
         boolean!(memory_mode_available, "AGENT_MEMORY_MODE_AVAILABLE");
         string!(token, "AGENT_TOKEN");
@@ -210,7 +207,6 @@ impl Config {
             };
         }
 
-        copy!(auto_discovery_key);
         copy!(disable_auto_update);
         copy!(memory_mode_available);
         copy!(token);
@@ -275,7 +271,6 @@ impl Config {
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Config")
-            .field("auto_discovery_key", &mask(&self.auto_discovery_key))
             .field("disable_auto_update", &self.disable_auto_update)
             .field("memory_mode_available", &self.memory_mode_available)
             .field("token", &mask(&self.token))
@@ -561,7 +556,6 @@ mod tests {
         let cli = CliOverrides {
             token: Some("super-secret-token".to_owned()),
             cf_access_client_secret: Some("cf-secret".to_owned()),
-            auto_discovery_key: Some("discovery-secret".to_owned()),
             ..CliOverrides::default()
         };
 
@@ -570,7 +564,6 @@ mod tests {
 
         assert!(!rendered.contains("super-secret-token"));
         assert!(!rendered.contains("cf-secret"));
-        assert!(!rendered.contains("discovery-secret"));
-        assert_eq!(rendered.matches(MASK).count(), 3);
+        assert_eq!(rendered.matches(MASK).count(), 2);
     }
 }

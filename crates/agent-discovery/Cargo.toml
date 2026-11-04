@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Auto discovery and DNS support for the Komari agent"
+description = "DNS and HTTP support for the Komari agent"
 
 [dependencies]
 async-trait.workspace = true

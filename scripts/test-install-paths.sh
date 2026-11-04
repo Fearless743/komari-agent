@@ -64,19 +64,13 @@ fi
 [ "$(mode "$ROOT/victim-dir")" = "755" ] || fail "symlinked parent target changed"
 [ ! -e "$ROOT/victim-dir/new" ] || fail "directory was created through a symlink"
 
-# 4. auto-discovery.json symlink must not be chmod'ed.
+# 4. --config symlink and .. must not be chmod'ed.
 mkdir -p "$ROOT/target"
 chmod 755 "$ROOT/target"
 printf 'not-a-secret\n' >"$ROOT/victim-file"
 chmod 644 "$ROOT/victim-file"
-ln -s "$ROOT/victim-file" "$ROOT/target/auto-discovery.json"
-if run_ensure "$ROOT/target" >/dev/null 2>&1; then
-    fail "symlinked auto-discovery.json was accepted"
-fi
-[ "$(mode "$ROOT/victim-file")" = "644" ] || fail "auto-discovery symlink target mode changed"
-
-# 5. --config symlink and .. must not be chmod'ed.
-if run_config "$ROOT/target/auto-discovery.json" >/dev/null 2>&1; then
+ln -s "$ROOT/victim-file" "$ROOT/target/config-link.json"
+if run_config "$ROOT/target/config-link.json" >/dev/null 2>&1; then
     fail "symlinked --config was accepted"
 fi
 [ "$(mode "$ROOT/victim-file")" = "644" ] || fail "--config symlink target mode changed"
@@ -86,7 +80,7 @@ if run_config "$ROOT/target/../victim-file" >/dev/null 2>&1; then
 fi
 [ "$(mode "$ROOT/victim-file")" = "644" ] || fail "--config .. changed the target mode"
 
-# 6. A normal new directory is still created with mode 700.
+# 5. A normal new directory is still created with mode 700.
 run_ensure "$ROOT/normal" >/dev/null
 [ "$(mode "$ROOT/normal")" = "700" ] || fail "normal install directory mode is not 700"
 
