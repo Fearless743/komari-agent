@@ -140,7 +140,7 @@ config.json with mode 0600.
 
 Examples:
   sudo ./install.sh --endpoint https://panel.example.com --token SECRET
-  sudo ./install.sh --install-version v0.2.0 --install-ghproxy https://ghproxy.net
+  sudo ./install.sh --install-version 1.5.0 --install-ghproxy https://ghproxy.net
   sudo ./install.sh --uninstall --purge
 EOF
 }

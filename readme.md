@@ -87,7 +87,7 @@ Unix 与 Windows 脚本使用同一套选项：
 | `--install-service-name NAME` | 服务名（默认 `komari-agent`） |
 | `--service NAME` | `--install-service-name` 的别名 |
 | `--install-ghproxy URL` | GitHub 代理前缀，例如 `https://ghproxy.net` |
-| `--install-version VERSION` | 指定 Release tag，例如 `v0.2.0`；默认最新版 |
+| `--install-version VERSION` | 指定 Release tag，例如 `1.5.0`（Agent tag 不带 `v` 前缀）；默认最新版 |
 | `--config FILE` | 使用已有配置文件，不再生成或改写 `<安装目录>/config.json`；此时 `--endpoint/--token/--interval` 会被忽略并告警 |
 | `--uninstall` | 停止并删除服务与二进制 |
 | `--purge` | 与 `--uninstall` 一起使用时，同时删除 `config.json` |
@@ -331,12 +331,39 @@ token 只在环境变量中，不会出现在容器命令行。也可以把 `AGE
 ### 脚本升级
 
 ```bash
-sudo ./install.sh --install-version v0.3.0   # 指定版本
-sudo ./install.sh                            # 最新版
+sudo ./install.sh --install-version 1.5.0   # 指定版本（与 Release tag 完全一致，不要加 v）
+sudo ./install.sh                           # 最新版
 ```
 
 脚本会停止旧服务、下载新二进制、保留 `config.json` 中未被覆盖的键，然后重启服务。
-Windows 重新运行 `install.ps1` 即可。
+Windows 重新运行 `install.ps1` 即可。`install.sh` / `install.ps1` 也随每个 Release
+作为资产上传，可直接从 Release 页面下载。
+
+### 从 Go 版迁移
+
+> Go 版的 `install.sh` / `install.ps1` **不能直接用于 Rust 版**，请使用本仓库的脚本
+> （已按同一套选项移植，并针对 Rust 做了适配）。
+
+| | Go 脚本 | Rust 脚本（本仓库） |
+| --- | --- | --- |
+| 二进制路径 | `<安装目录>/agent` | `<安装目录>/komari-agent[.exe]` |
+| 凭据传递 | `--token/--endpoint` 拼在服务命令行（`ps` 可见） | 写入 `config.json`（`0600`），命令行不带 token |
+| 下载资产名 | `komari-agent-<os>-<arch>` | 相同命名，可复用原来的代理/镜像配置 |
+| 服务名/安装目录默认值 | `komari-agent` / `/opt/komari` | 相同 |
+
+迁移步骤（建议**先 Agent 后面板**，因为 Rust Agent 只支持 v1 上报协议）：
+
+```bash
+# 在 Agent 机器上，用本仓库的新脚本直接覆盖安装；
+# 服务名相同，旧服务会被停掉并替换为指向新二进制的定义
+curl -fsSLO https://raw.githubusercontent.com/fearless743/komari-agent/main/install.sh
+chmod +x install.sh
+sudo ./install.sh --endpoint https://panel.example.com --token YOUR_TOKEN
+# 可选：删除 Go 版遗留的旧二进制
+sudo rm -f /opt/komari/agent
+```
+
+Windows 用新的 `install.ps1` 重新运行一次即可。
 
 ### 自更新
 
