@@ -263,24 +263,34 @@ systemd `Restart=on-failure` 不重启，因此改为 1。
   - CPU 仍用 `sample_cpu(1s)` 固定窗口，并覆盖报告中的 CPU 值；
   - `month_rotate` 通过 `MonitorOptions::from_monitor_config` 传入 netstatic；
   - `ReportSample::from_metrics` 显式逐字段构造，A03 新增字段不会被静默丢弃。
-  A03 不提供 IP，因此 `agent-client::ip` 仅保留 IP 采集；其外部服务差异见 D-020。
+  A03 不提供 IP，因此 `agent-client::ip` 仅保留 IP 采集；其外部服务行为见 D-020。
 
 状态：已收敛。`agent-client::supplement` 已删除，不再有第二套指标采集实现。
 
-## D-020 不访问外部 IP 查询服务，NIC 地址优先于 custom
+## D-020 外部 IP 查询已对齐（NIC > custom > 外部服务）
 
 - **Go**：`GetIPAddress` 的优先级是：启用 `get_ip_addr_from_nic` 且取到地址时直接返回；
-  否则使用 `custom_ipv4`/`custom_ipv6`；两者都没有时请求 visa.cn、ipify 等外部服务。
-- **Rust**：保留 NIC 优先和 custom 次之的优先级，但**不请求外部 IP 服务**；
-  未配置 NIC/custom 时基础信息中的 `ipv4`/`ipv6` 为空字符串。
+  否则使用 `custom_ipv4`/`custom_ipv6`；对应地址族仍为空时请求 visa.cn、ipify 等外部服务。
+- **Rust**：已按同样顺序实现，外部查询只在 NIC 与 custom 都没有提供该地址族时执行：
   - Unix：用 `getifaddrs` + `IFF_UP`（不含 `IFF_RUNNING`）判断接口可用，排除回环接口、
     回环地址和 IPv6 链路本地地址，与 Go `net.FlagUp` 语义一致；
   - 非 Unix：`if-addrs::is_oper_up()` 只是近似（另见 D-011）。
+- 外部查询细节与 Go 对齐：
+  - IPv4 顺序：visa.cn、qualcomm.cn、toutiao、edge-ip、vercel-ip、ipv4.ip.sb、ipify；
+  - IPv6 顺序：v6.ip.zxinc.org、api6.ipify.org、ipv6.icanhazip.com、api-ipv6.ip.sb；
+  - `User-Agent: curl/8.0.1`，单次请求 15 秒超时；
+  - IPv4/IPv6 客户端分别锁定 `tcp4`/`tcp6`：自定义 DNS 结果按地址族过滤，并用本地
+    地址族绑定兜底 IP 字面量；
+  - 读取 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`（大小写均可）；
+  - 使用 Go 相同的 IPv4/IPv6 正则提取，传输错误、超时或无匹配时继续下一个；
+  - 全部失败返回空字符串，不向调用方报错。
+  - 与 Go 一样不检查 HTTP 状态码，非 2xx 的响应体仍会参与正则提取。
+- 实现方式：基础信息在 `spawn_blocking` 中采集，因此外部查询使用阻塞式 `reqwest`；
+  DNS 走运行时的 `DnsResolver`（含 `custom_dns`），日志只记录端点与错误，不记录 token
+  或响应体。
 
-原因：避免 agent 在启动/基础信息上报时产生额外的外网依赖和隐私泄露；容器与内网部署
-通常更希望由 `custom_ipv4`/`custom_ipv6` 或网卡地址决定。
-影响：依赖公网出口 IP 自动识别的部署需要在配置中显式设置 `custom_ipv4`/`custom_ipv6`，
-或启用 `get_ip_addr_from_nic`。
+影响：未启用 NIC 且未设置 custom 的部署会像 Go 一样访问公网 IP 服务；容器/内网部署仍可
+通过 `get_ip_addr_from_nic` 或 `custom_ipv4`/`custom_ipv6` 完全避免外部请求。
 
 ## D-021 WebSocket 不走 HTTP(S)_PROXY，也不启用 permessage-deflate
 
