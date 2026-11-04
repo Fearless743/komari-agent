@@ -41,7 +41,11 @@ pub use disk::{
     parse_mountinfo, parse_mounts, sum_included_usage,
 };
 pub use error::MonitorError;
+#[cfg(windows)]
+pub use gpu::dxgi::GpuAdapter;
 pub use gpu::name::format_gpu_name_list;
+#[cfg(windows)]
+pub use gpu::windows::enumerate_gpu_adapters;
 pub use net::{NicFilter, network_speed, parse_nics, parse_proc_net_dev, should_include};
 pub use netstatic::{
     DEFAULT_DATA_PRESERVE_DAYS, DEFAULT_DETECT_INTERVAL, DEFAULT_SAVE_INTERVAL, NetStatic,
