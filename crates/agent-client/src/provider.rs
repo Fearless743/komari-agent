@@ -6,11 +6,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use agent_discovery::DnsResolver;
 use agent_monitor::{BasicInfo, Collector};
 use agent_protocol::BasicInfoV1;
 
 use crate::basic_info::build_basic_info;
-use crate::ip::{self, IpOptions};
+use crate::ip::{self, ExternalIpLookup, IpOptions};
 use crate::report::ReportSample;
 
 /// Source of report and basic-info data.
@@ -23,6 +24,7 @@ pub trait ReportProvider: Send + Sync {
 pub struct MonitorReportProvider {
     collector: Arc<Collector>,
     ip_options: IpOptions,
+    ip_lookup: ExternalIpLookup,
     cpu_window: Duration,
     version: String,
 }
@@ -34,12 +36,22 @@ impl MonitorReportProvider {
         cpu_window: Duration,
         version: impl Into<String>,
     ) -> Self {
+        let ip_lookup =
+            ExternalIpLookup::new(ip_options.external.clone(), DnsResolver::system_only());
         Self {
             collector,
             ip_options,
+            ip_lookup,
             cpu_window,
             version: version.into(),
         }
+    }
+
+    /// Use the runtime's DNS resolver (including `custom_dns`) for external IP
+    /// lookups. The default is the operating system resolver.
+    pub fn with_ip_resolver(mut self, resolver: DnsResolver) -> Self {
+        self.ip_lookup = ExternalIpLookup::new(self.ip_options.external.clone(), resolver);
+        self
     }
 
     pub fn collector(&self) -> &Arc<Collector> {
@@ -61,7 +73,7 @@ impl ReportProvider for MonitorReportProvider {
 
     fn collect_basic_info(&self) -> BasicInfoV1 {
         let info: BasicInfo = self.collector.collect_basic_info();
-        let (ipv4, ipv6) = ip::addresses(&self.ip_options);
+        let (ipv4, ipv6) = ip::addresses_with(&self.ip_options, &self.ip_lookup);
         build_basic_info(&info, &ipv4, &ipv6, &self.version)
     }
 }
