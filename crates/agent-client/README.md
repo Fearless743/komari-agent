@@ -41,8 +41,9 @@ v2、gzip 与 POST fallback 不存在（D-004）。
 - 指标收敛：A03 的 disk/network/connections/GPU/process/message 全部进入 `ReportV1`；
   `from_metrics` 逐字段构造无默认丢弃；
 - IP-only：网卡过滤通配符、IFF_UP 无 carrier、NIC/custom/外部服务优先级；
-  外部查询用本地 mock HTTP 覆盖 v4/v6 列表顺序、正则提取、超时、非 200、失败回退、
-  UA、代理、v4/v6 客户端隔离与全部失败返回空。
+  外部查询用本地 mock HTTP/SOCKS5 覆盖 v4/v6 列表顺序、ASCII 正则提取、超时、非 200、
+  失败回退、UA、HTTP 代理、HTTPS CONNECT、`NO_PROXY`、SOCKS5 远端解析、v4/v6 客户端
+  隔离与全部失败返回空；IPv6 回环不可用时打印明确 skip 日志。
 
 所有测试均在本机完成，不访问真实面板或 GitHub API。
 

@@ -5,7 +5,7 @@
 //! so a developer/CI `HTTP_PROXY` cannot redirect loopback traffic.
 
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -144,6 +144,141 @@ impl Drop for MockServer {
     }
 }
 
+#[derive(Clone, Debug)]
+struct SocksRequest {
+    atyp: u8,
+    host: String,
+    port: u16,
+    http_line: String,
+}
+
+type SocksResponder = Arc<dyn Fn(&SocksRequest) -> Response + Send + Sync>;
+
+/// Minimal SOCKS5 server (no-auth, CONNECT) that records the requested target
+/// and then speaks HTTP/1.1 on the same connection.
+struct MockSocks5 {
+    addr: SocketAddr,
+    requests: Arc<Mutex<Vec<SocksRequest>>>,
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl MockSocks5 {
+    fn spawn(responder: SocksResponder) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind SOCKS5 mock server");
+        listener
+            .set_nonblocking(true)
+            .expect("non-blocking listener");
+        let addr = listener.local_addr().expect("SOCKS5 mock address");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let recorded = requests.clone();
+        let stopping = stop.clone();
+        let handle = thread::spawn(move || {
+            while !stopping.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                        if let Some(request) = handle_socks5(&mut stream, &responder) {
+                            recorded.lock().unwrap().push(request);
+                        }
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Self {
+            addr,
+            requests,
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    fn requests(&self) -> Vec<SocksRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+impl Drop for MockSocks5 {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn read_exact_bytes(stream: &mut TcpStream, length: usize) -> Option<Vec<u8>> {
+    let mut buffer = vec![0u8; length];
+    stream.read_exact(&mut buffer).ok()?;
+    Some(buffer)
+}
+
+fn handle_socks5(stream: &mut TcpStream, responder: &SocksResponder) -> Option<SocksRequest> {
+    let greeting = read_exact_bytes(stream, 2)?;
+    if greeting[0] != 5 {
+        return None;
+    }
+    let methods = read_exact_bytes(stream, usize::from(greeting[1]))?;
+    if !methods.contains(&0) {
+        return None;
+    }
+    // No authentication.
+    stream.write_all(&[5, 0]).ok()?;
+
+    let header = read_exact_bytes(stream, 4)?;
+    if header[0] != 5 || header[1] != 1 {
+        return None;
+    }
+    let atyp = header[3];
+    let host = match atyp {
+        1 => {
+            let bytes = read_exact_bytes(stream, 4)?;
+            Ipv4Addr::from(<[u8; 4]>::try_from(bytes.as_slice()).ok()?).to_string()
+        }
+        3 => {
+            let length = usize::from(read_exact_bytes(stream, 1)?[0]);
+            String::from_utf8(read_exact_bytes(stream, length)?).ok()?
+        }
+        4 => {
+            let bytes = read_exact_bytes(stream, 16)?;
+            Ipv6Addr::from(<[u8; 16]>::try_from(bytes.as_slice()).ok()?).to_string()
+        }
+        _ => return None,
+    };
+    let port =
+        u16::from_be_bytes(<[u8; 2]>::try_from(read_exact_bytes(stream, 2)?.as_slice()).ok()?);
+    // Success, IPv4 bound address 0.0.0.0:0.
+    stream.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).ok()?;
+
+    let http = read_request(stream)?;
+    let request = SocksRequest {
+        atyp,
+        host,
+        port,
+        http_line: http.line,
+    };
+    let response = responder(&request);
+    write_response(stream, &response).ok()?;
+    Some(request)
+}
+
+fn spawn_v6_or_skip(test: &str, responder: Responder) -> Option<MockServer> {
+    match MockServer::spawn_v6(responder) {
+        Some(server) => Some(server),
+        None => {
+            eprintln!("skipping {test}: IPv6 loopback [::1] is unavailable");
+            None
+        }
+    }
+}
+
 fn read_request(stream: &mut TcpStream) -> Option<Request> {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 1024];
@@ -228,14 +363,17 @@ fn ipv4_endpoints_are_tried_in_order() {
 
 #[test]
 fn ipv6_endpoints_are_tried_in_order() {
-    let Some(server) = MockServer::spawn_v6(Arc::new(|request: &Request| {
-        if request.path().contains("first") {
-            Response::ok("not an address")
-        } else {
-            Response::ok(r#"{"ip":"2001:db8::20"}"#)
-        }
-    })) else {
-        return; // No IPv6 loopback in this environment.
+    let Some(server) = spawn_v6_or_skip(
+        "ipv6_endpoints_are_tried_in_order",
+        Arc::new(|request: &Request| {
+            if request.path().contains("first") {
+                Response::ok("not an address")
+            } else {
+                Response::ok(r#"{"ip":"2001:db8::20"}"#)
+            }
+        }),
+    ) else {
+        return;
     };
 
     let result = local_lookup(
@@ -352,12 +490,15 @@ fn proxy_settings_route_the_request_through_the_proxy() {
 
 #[test]
 fn ipv4_client_rejects_an_ipv6_literal() {
-    let Some(server) = MockServer::spawn_v6(Arc::new(|_: &Request| {
-        // Contains both families so a successful IPv4 connection would be
-        // visible in the assertion below.
-        Response::ok("ip=203.0.113.30\n2001:db8::30")
-    })) else {
-        return; // No IPv6 loopback in this environment.
+    let Some(server) = spawn_v6_or_skip(
+        "ipv4_client_rejects_an_ipv6_literal",
+        Arc::new(|_: &Request| {
+            // Contains both families so a successful IPv4 connection would be
+            // visible in the assertion below.
+            Response::ok("ip=203.0.113.30\n2001:db8::30")
+        }),
+    ) else {
+        return;
     };
 
     let v6_url = server.url("/v6");
@@ -418,8 +559,10 @@ fn custom_addresses_win_over_external_lookup() {
 
 #[test]
 fn external_lookup_fills_only_the_missing_family() {
-    let Some(server) = MockServer::spawn_v6(Arc::new(|_: &Request| Response::ok("2001:db8::99")))
-    else {
+    let Some(server) = spawn_v6_or_skip(
+        "external_lookup_fills_only_the_missing_family",
+        Arc::new(|_: &Request| Response::ok("2001:db8::99")),
+    ) else {
         return;
     };
     let options = IpOptions {
@@ -439,10 +582,101 @@ fn external_lookup_fills_only_the_missing_family() {
 }
 
 #[test]
+fn socks5_proxy_is_used_with_remote_name_resolution() {
+    let socks = MockSocks5::spawn(Arc::new(|_: &SocksRequest| {
+        Response::ok(r#"{"ip":"198.51.100.6"}"#)
+    }));
+    let settings = ProxySettings {
+        http: Some(format!("socks5://{}", socks.addr)),
+        https: None,
+        no_proxy: None,
+    };
+    let lookup = ExternalIpLookup::new(
+        config(
+            // This name cannot resolve locally; only the SOCKS proxy can
+            // accept it, proving the socks5h (remote DNS) translation.
+            vec!["http://external.invalid/ip".to_owned()],
+            Vec::new(),
+            Duration::from_secs(2),
+        ),
+        DnsResolver::system_only(),
+    )
+    .with_proxy(settings);
+
+    assert_eq!(lookup.lookup(IpFamily::V4).as_deref(), Some("198.51.100.6"));
+
+    let requests = socks.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].atyp, 3, "expected a domain-name SOCKS target");
+    assert_eq!(requests[0].host, "external.invalid");
+    assert_eq!(requests[0].port, 80);
+    assert_eq!(requests[0].http_line, "GET /ip HTTP/1.1");
+}
+
+#[test]
+fn https_endpoint_uses_connect_through_an_http_proxy() {
+    let proxy = MockServer::spawn(Arc::new(|request: &Request| {
+        // The tunnel is deliberately rejected; the assertion only verifies
+        // that HTTPS traffic is routed through CONNECT.
+        assert!(request.line.starts_with("CONNECT "), "{}", request.line);
+        Response::status(502, "tunnel refused")
+    }));
+    let settings = ProxySettings {
+        http: None,
+        https: Some(format!("http://{}", proxy.addr)),
+        no_proxy: None,
+    };
+    let lookup = ExternalIpLookup::new(
+        config(
+            vec!["https://external.invalid/ip".to_owned()],
+            Vec::new(),
+            Duration::from_secs(1),
+        ),
+        DnsResolver::system_only(),
+    )
+    .with_proxy(settings);
+
+    assert!(lookup.lookup(IpFamily::V4).is_none());
+
+    let requests = proxy.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0].line.contains("external.invalid:443"),
+        "unexpected CONNECT target: {}",
+        requests[0].line
+    );
+}
+
+#[test]
+fn no_proxy_bypasses_the_configured_proxy() {
+    let origin = MockServer::spawn(Arc::new(|_: &Request| Response::ok("ip=203.0.113.44")));
+    let proxy = MockServer::spawn(Arc::new(|_: &Request| Response::ok("ip=198.51.100.44")));
+    let settings = ProxySettings {
+        http: Some(format!("http://{}", proxy.addr)),
+        https: None,
+        no_proxy: Some("127.0.0.1".to_owned()),
+    };
+    let lookup = ExternalIpLookup::new(
+        config(vec![origin.url("/ip")], Vec::new(), Duration::from_secs(1)),
+        DnsResolver::system_only(),
+    )
+    .with_proxy(settings);
+
+    assert_eq!(lookup.lookup(IpFamily::V4).as_deref(), Some("203.0.113.44"));
+    assert_eq!(origin.requests().len(), 1);
+    assert!(
+        proxy.requests().is_empty(),
+        "NO_PROXY host was sent to the proxy"
+    );
+}
+
+#[test]
 fn nic_disabled_and_no_custom_values_queries_both_families() {
     let v4 = MockServer::spawn(Arc::new(|_: &Request| Response::ok("ip=203.0.113.55")));
-    let Some(v6) = MockServer::spawn_v6(Arc::new(|_: &Request| Response::ok("2001:db8::55")))
-    else {
+    let Some(v6) = spawn_v6_or_skip(
+        "nic_disabled_and_no_custom_values_queries_both_families",
+        Arc::new(|_: &Request| Response::ok("2001:db8::55")),
+    ) else {
         return;
     };
     let options = IpOptions {
