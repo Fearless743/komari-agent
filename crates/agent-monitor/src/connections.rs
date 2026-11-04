@@ -156,21 +156,59 @@ pub fn table_entry_count(buffer: &[u8]) -> u32 {
     }
 }
 
+/// `ERROR_INSUFFICIENT_BUFFER` (Win32 error 122).
+#[cfg(any(windows, test))]
+const ERROR_INSUFFICIENT_BUFFER_CODE: u32 = 122;
+
+/// Query a Windows IP Helper table with the same retry loop as gopsutil.
+///
+/// `call` receives the current buffer (`None` for the initial size probe) and
+/// the in/out size. When the table grows between the size probe and the data
+/// call, `GetExtendedTcpTable`/`GetExtendedUdpTable` return
+/// `ERROR_INSUFFICIENT_BUFFER` and update the size; the buffer is reallocated
+/// and the query retried instead of dropping the address family. Any other
+/// error is returned to the caller.
+#[cfg(any(windows, test))]
+fn query_table_with_retry<F>(name: &str, mut call: F) -> Result<u32, String>
+where
+    F: FnMut(Option<&mut [u8]>, &mut u32) -> u32,
+{
+    let mut size = 0u32;
+    let mut buffer: Option<Vec<u8>> = None;
+
+    loop {
+        let status = call(buffer.as_deref_mut(), &mut size);
+        if status == 0 {
+            return Ok(buffer.as_deref().map(table_entry_count).unwrap_or(0));
+        }
+        if status != ERROR_INSUFFICIENT_BUFFER_CODE {
+            return Err(format!("{name} failed with error {status}"));
+        }
+
+        let bytes = usize::try_from(size).unwrap_or(0);
+        if bytes == 0 {
+            // A zero-sized table cannot be queried again; treat it as empty.
+            return Ok(0);
+        }
+        buffer = Some(vec![0u8; bytes]);
+    }
+}
+
 #[cfg(windows)]
 mod windows_impl {
-    use windows::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
     use windows::Win32::NetworkManagement::IpHelper::{
         GetExtendedTcpTable, GetExtendedUdpTable, TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_PID,
     };
     use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 
-    use super::{ConnectionsCount, table_entry_count};
+    use super::{ConnectionsCount, query_table_with_retry};
 
     /// Query both address families and both protocols.
     ///
-    /// gopsutil's `getProcInet` ignores per-family failures and keeps the
-    /// entries it did collect, so a failed family contributes zero instead of
-    /// failing the whole report.
+    /// gopsutil's `getTCPConnections`/`getUDPConnections` retry with a larger
+    /// buffer when the table grows between the size probe and the data call;
+    /// [`query_table_with_retry`] mirrors that. Only a non-retryable failure
+    /// makes a family contribute zero, matching `getProcInet`'s `continue`.
     pub(super) fn count() -> ConnectionsCount {
         let mut tcp = 0u32;
         let mut udp = 0u32;
@@ -193,70 +231,23 @@ mod windows_impl {
     }
 
     fn query_tcp(family: u32) -> Result<u32, String> {
-        let mut size = 0u32;
-        // SAFETY: a null buffer asks for the required size; `size` is writable.
-        let status = unsafe {
-            GetExtendedTcpTable(None, &mut size, false, family, TCP_TABLE_OWNER_PID_ALL, 0)
-        };
-        if status == 0 {
-            return Ok(0);
-        }
-        if status != ERROR_INSUFFICIENT_BUFFER.0 {
-            return Err(format!("GetExtendedTcpTable failed with error {status}"));
-        }
-
-        let mut buffer = vec![0u8; usize::try_from(size).unwrap_or(0)];
-        if buffer.is_empty() {
-            return Ok(0);
-        }
-        // SAFETY: `buffer` has `size` bytes and stays alive for the call.
-        let status = unsafe {
-            GetExtendedTcpTable(
-                Some(buffer.as_mut_ptr().cast()),
-                &mut size,
-                false,
-                family,
-                TCP_TABLE_OWNER_PID_ALL,
-                0,
-            )
-        };
-        if status != 0 {
-            return Err(format!("GetExtendedTcpTable failed with error {status}"));
-        }
-        Ok(table_entry_count(&buffer))
+        query_table_with_retry("GetExtendedTcpTable", |buffer, size| {
+            let table: Option<*mut core::ffi::c_void> =
+                buffer.map(|buffer| buffer.as_mut_ptr().cast());
+            // SAFETY: `table` is either null (size probe) or points to `*size`
+            // writable bytes; `size` is a valid in/out u32 for the call.
+            unsafe { GetExtendedTcpTable(table, size, false, family, TCP_TABLE_OWNER_PID_ALL, 0) }
+        })
     }
 
     fn query_udp(family: u32) -> Result<u32, String> {
-        let mut size = 0u32;
-        // SAFETY: a null buffer asks for the required size; `size` is writable.
-        let status =
-            unsafe { GetExtendedUdpTable(None, &mut size, false, family, UDP_TABLE_OWNER_PID, 0) };
-        if status == 0 {
-            return Ok(0);
-        }
-        if status != ERROR_INSUFFICIENT_BUFFER.0 {
-            return Err(format!("GetExtendedUdpTable failed with error {status}"));
-        }
-
-        let mut buffer = vec![0u8; usize::try_from(size).unwrap_or(0)];
-        if buffer.is_empty() {
-            return Ok(0);
-        }
-        // SAFETY: `buffer` has `size` bytes and stays alive for the call.
-        let status = unsafe {
-            GetExtendedUdpTable(
-                Some(buffer.as_mut_ptr().cast()),
-                &mut size,
-                false,
-                family,
-                UDP_TABLE_OWNER_PID,
-                0,
-            )
-        };
-        if status != 0 {
-            return Err(format!("GetExtendedUdpTable failed with error {status}"));
-        }
-        Ok(table_entry_count(&buffer))
+        query_table_with_retry("GetExtendedUdpTable", |buffer, size| {
+            let table: Option<*mut core::ffi::c_void> =
+                buffer.map(|buffer| buffer.as_mut_ptr().cast());
+            // SAFETY: `table` is either null (size probe) or points to `*size`
+            // writable bytes; `size` is a valid in/out u32 for the call.
+            unsafe { GetExtendedUdpTable(table, size, false, family, UDP_TABLE_OWNER_PID, 0) }
+        })
     }
 }
 
@@ -352,5 +343,50 @@ bash        456 user    3r   REG                1,5     1234  123 /etc/hosts
         assert_eq!(table_entry_count(&buffer), 7);
         assert_eq!(table_entry_count(&[]), 0);
         assert_eq!(table_entry_count(&[1, 2, 3]), 0);
+    }
+
+    #[test]
+    fn windows_table_query_retries_when_the_table_grows() {
+        let mut calls = 0u32;
+        let count = query_table_with_retry("GetExtendedTcpTable", |buffer, size| {
+            calls += 1;
+            match buffer {
+                None => {
+                    *size = 8;
+                    ERROR_INSUFFICIENT_BUFFER_CODE
+                }
+                Some(buffer) if buffer.len() == 8 => {
+                    // A connection appeared between the size probe and the
+                    // data call, so the table no longer fits.
+                    *size = 16;
+                    ERROR_INSUFFICIENT_BUFFER_CODE
+                }
+                Some(buffer) => {
+                    buffer[..4].copy_from_slice(&3u32.to_le_bytes());
+                    0
+                }
+            }
+        })
+        .unwrap();
+
+        assert_eq!(count, 3);
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn windows_table_query_returns_other_errors() {
+        let error = query_table_with_retry("GetExtendedTcpTable", |_buffer, _size| 87)
+            .expect_err("non-retryable error");
+        assert!(error.contains("failed with error 87"), "{error}");
+    }
+
+    #[test]
+    fn windows_table_query_treats_zero_sized_tables_as_empty() {
+        let count = query_table_with_retry("GetExtendedUdpTable", |_buffer, size| {
+            *size = 0;
+            ERROR_INSUFFICIENT_BUFFER_CODE
+        })
+        .unwrap();
+        assert_eq!(count, 0);
     }
 }

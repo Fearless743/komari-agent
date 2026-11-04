@@ -217,7 +217,8 @@ strict 模式行为与之对齐，非 strict 模式则提供本机回退。
 - macOS/FreeBSD 连接数执行 `lsof -a -n -P -i tcp|udp`，按 gopsutil 的
   `parseNetLine` 规则过滤 IPv4/IPv6 的 TCP/UDP 行；Windows 读取
   `GetExtendedTcpTable`（`TCP_TABLE_OWNER_PID_ALL`）与 `GetExtendedUdpTable`
-  （`UDP_TABLE_OWNER_PID`）的 IPv4+IPv6 表头条目数。其它非 Linux 平台返回错误，
+  （`UDP_TABLE_OWNER_PID`）的 IPv4+IPv6 表头条目数，表在取大小与取数据之间增长时
+  按新 size 重新分配并重试（与 gopsutil 一致）。其它非 Linux 平台返回错误，
   上报 0 并写入 `message`。
 - macOS/FreeBSD 进程数执行 `ps -A`/`ps -ax` 并跳过表头、统计实际进程行；Windows
   调用 `K32EnumProcesses`，缓冲区不足时倍增后重试；其它非 Linux 平台使用
