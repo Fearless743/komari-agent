@@ -214,19 +214,30 @@ strict 模式行为与之对齐，非 strict 模式则提供本机回退。
 - TCP = `net/tcp` + `net/tcp6` 数据行，UDP = `net/udp` + `net/udp6`；缺失的单个文件
   跳过，整族都缺失则视为失败并上报 0。
 - 进程数为 `<proc_root>` 下名称可解析为整数的条目数，`HOST_PROC` 生效。
-- 非 Linux 进程数使用 `sysinfo`（Go 为 `ps` 行数或 `K32EnumProcesses`）；连接数目前
-  只实现 Linux，非 Linux 恒为 0（D-014、D-017）。
+- macOS/FreeBSD 连接数执行 `lsof -a -n -P -i tcp|udp`，按 gopsutil 的
+  `parseNetLine` 规则过滤 IPv4/IPv6 的 TCP/UDP 行；Windows 读取
+  `GetExtendedTcpTable`（`TCP_TABLE_OWNER_PID_ALL`）与 `GetExtendedUdpTable`
+  （`UDP_TABLE_OWNER_PID`）的 IPv4+IPv6 表头条目数。其它非 Linux 平台返回错误，
+  上报 0 并写入 `message`。
+- macOS/FreeBSD 进程数执行 `ps -A`/`ps -ax` 并跳过表头、统计实际进程行；Windows
+  调用 `K32EnumProcesses`，缓冲区不足时倍增后重试；其它非 Linux 平台使用
+  `sysinfo`。
+- 与 Go 的进程数口径差异（`ps` 表头、Windows 1024 项上限）见
+  [`D-025`](../../docs/parity-deviations.md)。
 
 ## GPU
 
 对应 `monitoring/unit/gpu*.go`：
 
 - `gpu_name`（基础信息）Linux 先 `lspci`，再 `/sys/class/drm`；macOS 使用
-  `system_profiler`，FreeBSD 使用 `pciconf`，Windows 返回 `Unknown`（Go 用 DXGI，
-  见 D-017）。
+  `system_profiler`，FreeBSD 使用 `pciconf`；Windows 通过 DXGI
+  （`CreateDXGIFactory1` + `EnumAdapters1` + `GetDesc1`）枚举，按 Go 规则过滤
+  `DXGI_ADAPTER_FLAG_SOFTWARE` 并按 LUID 去重。
+- Windows 的适配器结构（名称、vendor/device ID、专用/共享显存）通过
+  `enumerate_gpu_adapters()` 公开；v1 协议没有显存字段，因此不进入上报。
 - `enable_gpu` 打开详细探测：优先定位并执行 `nvidia-smi -q -x`，XML 解析成功即使用
   NVIDIA；否则尝试 `rocm-smi --showallinfo --json`（AMD）。Intel 目前仅参与型号
-  识别，不提供详细显存/利用率。
+  识别，不提供详细显存/利用率；非 Linux 平台与 Go 一样不支持详细探测（D-026）。
 - 详细形状：`{count, average_usage, detailed_info:[{name,memory_total,memory_used,
   utilization,temperature}]}`；详细探测失败但型号可用时输出 `{"models":[...]}`。
 - 工具缺失、无 GPU、XML/JSON 损坏都只导致 `gpu` 缺失，其它指标不受影响。
@@ -273,10 +284,28 @@ Linux 按 Go 的顺序检测：Android（`getprop`/`build.prop`/目录）、Prox
 
 - **Linux**：完整实现，读取注入的 proc/sys/root。
 - **macOS / FreeBSD / Windows**：通过 `sysinfo` 提供 CPU、内存、Swap、负载（Windows
-  无负载平均值，返回 0）、磁盘、网络、uptime、OS 名称与内核版本；连接数返回 0，
-  详细 GPU 探测不可用（`gpu_name` 在 macOS/FreeBSD 走系统命令，Windows 返回
-  `Unknown`）；虚拟化探测在 macOS 使用 `sysctl kern.hv_vmm_present`，FreeBSD 使用
-  `sysctl kern.vm_guest`，Windows 暂返回空。
+  无负载平均值，返回 0）、磁盘、网络、uptime、OS 名称与内核版本；平台专有路径：
+  - GPU 名称：macOS `system_profiler`、FreeBSD `pciconf`、Windows DXGI（含显存枚举）；
+  - 连接数：macOS/FreeBSD `lsof`、Windows `GetExtendedTcpTable`/`GetExtendedUdpTable`；
+  - 进程数：macOS/FreeBSD `ps`、Windows `K32EnumProcesses`。
+- 详细 GPU 探测仅 Linux（与 Go 一致，D-026）；虚拟化探测在 macOS 使用
+  `sysctl kern.hv_vmm_present`，FreeBSD 使用 `sysctl kern.vm_guest`，Windows 暂返回空。
+
+### 平台验证状态（A09）
+
+本机只能运行 Linux。以下平台路径只做了交叉编译检查与平台无关纯函数测试，**未在
+目标系统实测**：
+
+| 平台 | 实现 | 已验证 | 未验证 |
+|---|---|---|---|
+| Windows | DXGI GPU、IP Helper 连接数、K32EnumProcesses | `cargo check`/`clippy --target x86_64-pc-windows-gnu`；完整 `agent-cli` 用 mingw 交叉构建并链接成功（DXGI/iphlpapi/kernel32 导入可解析）；DXGI 名称格式化/去重、UTF-16 解码、表头解析在 Linux 测试 | 运行时 DXGI COM 调用与真实适配器、`iphlpapi` 返回值、EnumProcesses 扩容、真实进程/连接数 |
+| macOS | `ps -A`、`lsof`、`system_profiler` | `cargo check`/`clippy --target x86_64-apple-darwin`；`ps`/`lsof` 解析在 Linux 测试 | 真实 `ps`/`lsof` 输出；非 root 运行 `lsof` 只能看到本用户 socket |
+| FreeBSD | `ps -ax`、`lsof`、`pciconf` | `cargo check`/`clippy --target x86_64-unknown-freebsd`；解析函数同上 | 真实命令输出；`lsof` 是否随基础系统安装 |
+| FreeBSD/armv7 | 无发布产物（D-024） | nightly `-Z build-std` 仅验证 `agent-monitor` | 完整 CLI 需 FreeBSD/armv7 C 工具链（`aws-lc-sys`） |
+
+`cargo check --workspace` 交叉到 macOS/FreeBSD 时会在 `aws-lc-sys` 的 C 编译阶段
+失败（缺少对应 C 交叉工具链），这是环境限制，不是平台采集代码的问题；Windows GNU
+目标的 workspace check 可以通过。
 
 ## 已知限制
 
@@ -291,10 +320,11 @@ Linux 按 Go 的顺序检测：Android（`getprop`/`build.prop`/目录）、Prox
 - 月流量数据库没有后台采样线程，采样点等于上报点；进程被强制杀死时最多丢失一个
   `save_interval` 窗口的内存增量（D-013）。
 - Go 的 Linux 连接数回退会做 per-pid fd/inode 去重，但仍依赖 `/proc/net`；Rust 不
-  做该回退，快路径失败直接上报 0；非 Linux 连接数恒为 0（D-014、D-017）。
+  做该回退，快路径失败直接上报 0（D-014）。非 Linux 连接数已按平台实现，见“平台
+  支持”；未在目标系统实测。
 - 详细 GPU 探测为空（例如驱动存在但无设备）时省略 `gpu`，不会产生 Go 的
   `count:0` + `NaN` 平均使用率（D-015）。
-- Windows GPU 型号未知；非 Linux 进程数使用 `sysinfo`，与 `ps`/EnumProcesses 口径
-  可能略有差异（D-017）。
+- Windows/Intel 详细 GPU 指标不可用（与 Go 一致，D-026）；非 Linux 进程数口径按
+  D-025 修正（`ps` 表头与 Windows 1024 项上限），可能与本机 Go 版相差 1 或更多。
 - 磁盘挂载表与网络计数器从注入的 `proc_root` 读取；挂载表来源与 gopsutil 一致
   （优先 `/proc/1/mountinfo`），但读取根可被 `HOST_PROC` 重定向，容器部署更可控。

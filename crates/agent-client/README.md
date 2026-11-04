@@ -47,7 +47,7 @@ v2、gzip 与 POST fallback 不存在（D-004）。
 ## 已知限制
 
 - 指标采集全部来自 A03；A05 只保留 IP-only 模块（D-019）。非 Linux 的
-  GPU/连接/进程降级行为见 A03 的 D-017；
+  GPU/连接/进程平台路径见 A03 的 D-017（未在目标系统实测，见 agent-monitor README）；
 - 未设置 `custom_ipv4/ipv6` 且未启用 `get_ip_addr_from_nic` 时，基础信息中的 IP 为空
   （Go 会调用外部 IP 查询服务，这里刻意避免引入外网依赖，见 D-020）；
 - 重试耗尽后由 CLI 以退出码 1 退出，而不是像 Go root 命令那样立即进入下一轮
