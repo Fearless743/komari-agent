@@ -381,13 +381,15 @@ fn apply_proxy_settings(mut builder: ClientBuilder, settings: &ProxySettings) ->
     if let Some(value) = settings.http.as_deref() {
         match Proxy::http(normalize_proxy_url(value)) {
             Ok(proxy) => builder = builder.proxy(proxy_with_no_proxy(proxy, settings)),
-            Err(err) => debug!(%err, "ignoring invalid HTTP_PROXY"),
+            // The parse error can contain the proxy URL (and its credentials),
+            // so only record that the value was ignored.
+            Err(_) => debug!("ignoring invalid HTTP_PROXY"),
         }
     }
     if let Some(value) = settings.https.as_deref() {
         match Proxy::https(normalize_proxy_url(value)) {
             Ok(proxy) => builder = builder.proxy(proxy_with_no_proxy(proxy, settings)),
-            Err(err) => debug!(%err, "ignoring invalid HTTPS_PROXY"),
+            Err(_) => debug!("ignoring invalid HTTPS_PROXY"),
         }
     }
     builder
