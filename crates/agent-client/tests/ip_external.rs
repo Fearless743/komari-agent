@@ -614,6 +614,28 @@ fn socks5_proxy_is_used_with_remote_name_resolution() {
 }
 
 #[test]
+fn socks5_scheme_is_case_insensitive() {
+    let socks = MockSocks5::spawn(Arc::new(|_: &SocksRequest| Response::ok("ip=198.51.100.7")));
+    let settings = ProxySettings {
+        http: Some(format!("SOCKS5://{}", socks.addr)),
+        https: None,
+        no_proxy: None,
+    };
+    let lookup = ExternalIpLookup::new(
+        config(
+            vec!["http://external.invalid/ip".to_owned()],
+            Vec::new(),
+            Duration::from_secs(2),
+        ),
+        DnsResolver::system_only(),
+    )
+    .with_proxy(settings);
+
+    assert_eq!(lookup.lookup(IpFamily::V4).as_deref(), Some("198.51.100.7"));
+    assert_eq!(socks.requests().len(), 1);
+}
+
+#[test]
 fn https_endpoint_uses_connect_through_an_http_proxy() {
     let proxy = MockServer::spawn(Arc::new(|request: &Request| {
         // The tunnel is deliberately rejected; the assertion only verifies

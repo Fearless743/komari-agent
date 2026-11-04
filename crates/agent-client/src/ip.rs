@@ -414,11 +414,15 @@ fn proxy_with_no_proxy(proxy: Proxy, settings: &ProxySettings) -> Proxy {
 ///
 /// Go's socks5 transport lets the proxy resolve the destination name. reqwest
 /// spells that `socks5h`, so translate the Go-compatible `socks5://` value
-/// rather than silently resolving the target locally.
+/// rather than silently resolving the target locally. URL schemes are
+/// case-insensitive, matching Go's `url.Parse`.
 fn normalize_proxy_url(value: &str) -> String {
     let value = value.trim();
-    if let Some(rest) = value.strip_prefix("socks5://") {
-        return format!("socks5h://{rest}");
+    if value
+        .get(..9)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("socks5://"))
+    {
+        return format!("socks5h://{}", &value[9..]);
     }
     if value.contains("://") {
         value.to_owned()
@@ -723,6 +727,15 @@ mod tests {
         assert_eq!(
             normalize_proxy_url("socks5://127.0.0.1:1080"),
             "socks5h://127.0.0.1:1080"
+        );
+        // URL schemes are case-insensitive, like Go's url.Parse.
+        assert_eq!(
+            normalize_proxy_url("SOCKS5://127.0.0.1:1080"),
+            "socks5h://127.0.0.1:1080"
+        );
+        assert_eq!(
+            normalize_proxy_url("Socks5://user:pass@127.0.0.1:1080"),
+            "socks5h://user:pass@127.0.0.1:1080"
         );
     }
 
