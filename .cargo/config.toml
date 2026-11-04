@@ -1,0 +1,15 @@
+# FreeBSD base libraries.
+#
+# The Rust FreeBSD target spec links libgeom/libkvm/libmemstat/libprocstat/
+# libdevstat. The cross-rs images do not ship them, so CI extracts the
+# matching 12.4-RELEASE base set into /freebsd (see Cross.toml). These paths
+# are ignored on hosts where they do not exist.
+
+[target.x86_64-unknown-freebsd]
+rustflags = ["-L", "native=/freebsd/usr/lib", "-L", "native=/freebsd/lib"]
+
+[target.i686-unknown-freebsd]
+rustflags = ["-L", "native=/freebsd/usr/lib", "-L", "native=/freebsd/lib"]
+
+[target.aarch64-unknown-freebsd]
+rustflags = ["-L", "native=/freebsd/usr/lib", "-L", "native=/freebsd/lib"]

@@ -3,13 +3,8 @@
 # The cross-rs FreeBSD images ship a compiler and libc, but not the FreeBSD
 # base libraries that the Rust target spec links by default (`libgeom`,
 # `libkvm`, `libmemstat`, `libprocstat`, `libdevstat`). Extract them from the
-# matching 12.4-RELEASE base set and add them to the linker search path.
-#
-# `rustflags` is a `[build]` key in cross; `[target.*]` only accepts
-# image/dockerfile/pre-build/env.
-
-[build]
-rustflags = ["-L", "native=/freebsd/usr/lib", "-L", "native=/freebsd/lib"]
+# matching 12.4-RELEASE base set; `.cargo/config.toml` adds them to the
+# linker search path.
 
 [target.x86_64-unknown-freebsd]
 pre-build = [
