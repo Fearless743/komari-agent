@@ -285,7 +285,10 @@ systemd `Restart=on-failure` 不重启，因此改为 1。
     地址族绑定兜底 IP 字面量；
   - 代理变量与 Go 的 `http.ProxyFromEnvironment` 一致：只读
     `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`（大小写均可），不读 `ALL_PROXY`；
-    支持 `socks5://`，并按 Go 语义交由代理解析目标域名（reqwest 侧使用 `socks5h`）；
+    代理变量只读取一次（Go 的 `ProxyFromEnvironment` 也缓存首次结果），行为等价；
+  - 支持 `socks5://` 与 `socks5h://`（scheme 大小写不敏感）；Go 对两者都使用远端
+    DNS，Rust 将 `socks5://` 规范化为 reqwest 的 `socks5h://` 以对齐该行为；
+    Go 不支持 `socks4`/`socks4a`；
   - IPv4 正则使用 ASCII `[0-9]{1,3}`，等价于 Go RE2 的 `\d`（Go 的 `\d` 不匹配全角数字）；
     IPv6 正则表达式与 Go 逐字符一致；
   - 传输错误、超时或无匹配时继续下一个，全部失败返回空字符串；
@@ -296,9 +299,7 @@ systemd `Restart=on-failure` 不重启，因此改为 1。
 
 已登记差异：
 
-- 代理环境变量在创建 lookup 时读取一次；Go 的 `ProxyFromEnvironment` 每次请求都会读取。
-- reqwest 额外接受 `socks5h://`（代理解析）与 `socks4`/`socks4a` 形式的 URL；Go 仅保证
-  `socks5://`。Rust 将 `socks5://` 规范化为 `socks5h://` 以匹配 Go 的远端解析行为。
+- reqwest 额外接受 `socks4`/`socks4a`；Go 的 `ProxyFromEnvironment` 不支持这两种协议。
 - `NO_PROXY` 的匹配细节由 reqwest/hyper-util 提供，未逐条复刻 Go `httpproxy` 的全部边界
   （常见域名、IP、端口与通配场景已覆盖）。
 - 外部查询使用阻塞式 `reqwest`（在 `spawn_blocking` 内），不是 Go 的 `net/http` transport；
