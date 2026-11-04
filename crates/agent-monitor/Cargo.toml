@@ -24,7 +24,11 @@ tracing.workspace = true
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_System_ProcessStatus"] }
+windows = { version = "0.62", features = [
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_System_ProcessStatus",
+] }
 
 [dev-dependencies]
 serde_json.workspace = true
