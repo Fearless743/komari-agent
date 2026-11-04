@@ -56,8 +56,11 @@ pub const GO_IPV6_ENDPOINTS: [&str; 4] = [
     "http://api-ipv6.ip.sb/geoip",
 ];
 
-static IPV4_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}").expect("valid IPv4 regex"));
+// Go's `\d` in RE2 is ASCII-only. Rust's `\d` is Unicode-aware, so use an
+// explicit ASCII class to keep full-width digits from being accepted.
+static IPV4_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}").expect("valid IPv4 regex")
+});
 
 // Kept byte-for-byte equivalent to Go's IPv6 expression so both agents accept
 // the same bodies (including compressed forms).
@@ -152,17 +155,17 @@ impl fmt::Debug for ProxySettings {
 
 impl ProxySettings {
     /// Read the conventional proxy variables, matching Go's
-    /// `http.ProxyFromEnvironment` (plus `ALL_PROXY` as a fallback).
+    /// `http.ProxyFromEnvironment`: `HTTP_PROXY`, `HTTPS_PROXY` and
+    /// `NO_PROXY` only (no `ALL_PROXY`).
     pub fn from_env() -> Self {
         Self::from_env_lookup(&|key| std::env::var(key).ok())
     }
 
     /// Testable variant of [`ProxySettings::from_env`].
     pub fn from_env_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Self {
-        let all = env_value(lookup, &["ALL_PROXY", "all_proxy"]);
         Self {
-            http: env_value(lookup, &["HTTP_PROXY", "http_proxy"]).or_else(|| all.clone()),
-            https: env_value(lookup, &["HTTPS_PROXY", "https_proxy"]).or(all),
+            http: env_value(lookup, &["HTTP_PROXY", "http_proxy"]),
+            https: env_value(lookup, &["HTTPS_PROXY", "https_proxy"]),
             no_proxy: env_value(lookup, &["NO_PROXY", "no_proxy"]),
         }
     }
@@ -408,8 +411,15 @@ fn proxy_with_no_proxy(proxy: Proxy, settings: &ProxySettings) -> Proxy {
 }
 
 /// Go accepts `host:port` proxies; reqwest needs a scheme.
+///
+/// Go's socks5 transport lets the proxy resolve the destination name. reqwest
+/// spells that `socks5h`, so translate the Go-compatible `socks5://` value
+/// rather than silently resolving the target locally.
 fn normalize_proxy_url(value: &str) -> String {
     let value = value.trim();
+    if let Some(rest) = value.strip_prefix("socks5://") {
+        return format!("socks5h://{rest}");
+    }
     if value.contains("://") {
         value.to_owned()
     } else {
@@ -640,6 +650,10 @@ mod tests {
             Some("198.51.100.7")
         );
         assert!(extract_ip(IpFamily::V4, "no address here").is_none());
+        // Go's RE2 `\d` only matches ASCII; Rust's Unicode `\d` would accept
+        // these full-width digits.
+        assert!(extract_ip(IpFamily::V4, "２０３.０.１１３.９").is_none());
+        assert!(extract_ip(IpFamily::V4, "٢٠٣.٠.١١٣.٩").is_none());
     }
 
     #[test]
@@ -676,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn proxy_environment_uses_http_https_and_all_proxy() {
+    fn proxy_environment_matches_go_variables() {
         let settings = ProxySettings::from_env_lookup(&|key| match key {
             "HTTP_PROXY" => Some("http://proxy.example:8080".to_owned()),
             "HTTPS_PROXY" => Some("http://secure.example:8443".to_owned()),
@@ -690,12 +704,13 @@ mod tests {
         );
         assert_eq!(settings.no_proxy.as_deref(), Some("localhost,127.0.0.1"));
 
+        // Go's `http.ProxyFromEnvironment` does not consult ALL_PROXY.
         let settings = ProxySettings::from_env_lookup(&|key| match key {
             "ALL_PROXY" => Some("http://all.example:3128".to_owned()),
             _ => None,
         });
-        assert_eq!(settings.http.as_deref(), Some("http://all.example:3128"));
-        assert_eq!(settings.https.as_deref(), Some("http://all.example:3128"));
+        assert!(settings.http.is_none());
+        assert!(settings.https.is_none());
     }
 
     #[test]
@@ -704,9 +719,10 @@ mod tests {
             normalize_proxy_url("127.0.0.1:8080"),
             "http://127.0.0.1:8080"
         );
+        // Go's socks5 dialer resolves at the proxy; reqwest calls that socks5h.
         assert_eq!(
             normalize_proxy_url("socks5://127.0.0.1:1080"),
-            "socks5://127.0.0.1:1080"
+            "socks5h://127.0.0.1:1080"
         );
     }
 
