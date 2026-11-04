@@ -187,14 +187,15 @@ workflow 只上传裸二进制 `komari-agent-{os}-{arch}[.exe]`，因此正常�
   （v4.26.x `net_linux.go`），**不是 netlink**，也不覆盖 `/proc/net` 完全不可读的
   情况，并且需要读取 `/proc/<pid>/fd` 的权限。
 - **Rust**：只实现 `/proc/net` 快路径；失败时上报 0 并写入 `message`。
-- **非 Linux**：Go 的 `net.Connections` 有各平台实现；Rust 当前恒为 0（D-017）。
+- **非 Linux**：Go 的 `net.Connections` 有各平台实现；Rust 已按相同路径补齐
+  （D-017），本条只讨论 Linux 快路径失败时的回退。
 
 原因：避免引入 inode/文件描述符级枚举与各平台 socket API 的大量代码；任务要求覆盖
 `/proc` fixture 与 `HOST_PROC`。
 
 影响：Go 的回退同样依赖 `/proc/net`，因此不能覆盖 `/proc/net` 完全不可读的场景；
 它额外处理 per-pid fd/inode 去重并需要 fd 权限。Rust 快路径失败时直接上报 0；
-macOS/FreeBSD/Windows 同样为 0（D-017）。
+macOS/FreeBSD/Windows 的独立实现见 D-017。
 
 状态：已知限制，待后续补齐。
 
@@ -224,22 +225,32 @@ macOS/FreeBSD/Windows 同样为 0（D-017）。
 
 状态：有意修复。
 
-## D-017 非 Linux 平台采集为可编译降级
+## D-017 非 Linux 平台采集已补齐（A09）
 
-- **Go**：Windows 通过 DXGI 枚举 GPU 名称；macOS/FreeBSD/Windows 均实现
-  `net.Connections`；进程数在 macOS/FreeBSD 用 `ps`，Windows 用
-  `K32EnumProcesses`。
-- **Rust**：Windows `gpu_name` 返回 `Unknown`；非 Linux 连接数恒为 0；非 Linux 进程数
-  使用 `sysinfo`；详细 GPU 探测仅 Linux。
+- **Go**：Windows 通过 DXGI 枚举 GPU 名称；macOS/FreeBSD 通过 `lsof`、Windows 通过
+  `GetExtendedTcpTable`/`GetExtendedUdpTable` 统计连接数；进程数在 macOS/FreeBSD 用
+  `ps -A`/`ps -ax`，Windows 用 `K32EnumProcesses`。
+- **Rust**：已按相同路径实现：
+  - `gpu_name`：Windows 使用 DXGI（`CreateDXGIFactory1` + `EnumAdapters1` +
+    `GetDesc1`），按 Go 规则过滤软件适配器、按 LUID 去重；适配器名称与专用/共享
+    显存通过 `agent_monitor::enumerate_gpu_adapters()` 暴露。
+  - 连接数：macOS/FreeBSD 执行 `lsof -a -n -P -i tcp|udp`；Windows 读取
+    `TCP_TABLE_OWNER_PID_ALL` / `UDP_TABLE_OWNER_PID` 的 IPv4+IPv6 表头。
+  - 进程数：macOS/FreeBSD 执行 `ps` 并统计数据行；Windows 调用
+    `K32EnumProcesses`（缓冲区不足时扩容）。其它非 Linux 平台保留 `sysinfo` 回退。
+- 剩余差异：进程数口径修正见 D-025；Windows/Intel 详细 GPU 指标仍不可用（与 Go
+  一致）见 D-026。
+- 验证：Linux fmt/clippy/test；`cargo check`/`clippy` 交叉到
+  `x86_64-pc-windows-gnu`、`x86_64-apple-darwin`、`x86_64-unknown-freebsd`；
+  Windows GNU 完整 `agent-cli` 交叉构建与链接通过（验证 DXGI/iphlpapi/kernel32
+  导入）；运行时行为未在目标系统实测（见 crate README 的平台验证状态）。
 
-原因：本任务要求非 Linux 提供可编译降级，不要求平台原生对等；这些路径不影响 Linux
-主目标。
+原因：原任务只要求非 Linux 可编译降级；A09 补齐平台原生路径。
 
-影响：Windows 基础信息缺少真实 GPU 型号；非 Linux 面板连接数为 0；进程数口径与
-`ps` 行数/EnumProcesses 可能略有差异。后续平台任务可替换为 DXGI、平台 socket API
-与原生进程枚举。
+影响：Windows 基础信息可获得真实 GPU 型号；非 Linux 面板连接数不再恒为 0；
+进程数口径按 D-025 修正。
 
-状态：已知限制，待平台任务补齐。
+状态：A09 已补齐平台路径；剩余差异单独登记。
 
 ## D-018 重试耗尽后 CLI 以非零码退出
 
@@ -330,3 +341,49 @@ systemd `Restart=on-failure` 不重启，因此改为 1。
 影响：FreeBSD/arm 用户目前需要使用 Go 版，或在 FreeBSD/arm 主机上用
 `-Z build-std` 自行构建。`install.sh` 在 FreeBSD/arm 上会明确报错，不会下载
 不存在的资产；其余 FreeBSD 目标（amd64/arm64/386）不受影响。
+
+A09 评估（nightly `-Z build-std`）：
+
+- `rustc +nightly --print target-list` 仍包含 `armv7-unknown-freebsd`；安装
+  `rust-src` 后，`cargo +nightly check -Z build-std=std,panic_abort --target
+  armv7-unknown-freebsd -p agent-monitor` 可以通过，说明平台代码本身可编译。
+- 完整 `agent-cli` 仍会失败：`aws-lc-sys` 需要为 FreeBSD/armv7 编译 C 代码，在
+  Linux 主机上 `cc` 被当作目标编译器调用，因缺少对应 sysroot/工具链而报错
+  （`pthread_rwlock_t` 未定义）。
+- 因此 release 矩阵仍不包含该目标。需要产物的用户应在 FreeBSD/armv7 主机（或具备
+  对应 C 交叉工具链的环境）上使用 nightly + `rust-src` + `-Z build-std` 自行构建；
+  `install.sh` 继续按 D-024 明确报错。
+
+## D-025 非 Linux 进程数口径修正
+
+- **Go**：macOS `ps -A` / FreeBSD `ps -ax` 的结果用
+  `len(strings.Split(output, "\n")) - 1` 计数；由于输出以换行结尾，表头也会被算作
+  一个进程（通常比实际多 1）。Windows `K32EnumProcesses` 使用固定 1024 项缓冲区，
+  进程数超过 1024 时只返回 1024。
+- **Rust**：`ps` 输出跳过表头与空行后统计实际进程行；Windows 在
+  `bytesReturned == buffer size` 时倍增缓冲区（上限 1048576 项），准确统计 PID 数。
+
+原因：按实际进程数上报，避免 macOS/FreeBSD 恒定 +1 与 Windows 大量进程时低估。
+
+影响：Rust 在 macOS/FreeBSD 上通常比 Go 少 1；Windows 在超过 1024 个进程时比 Go
+多。字段类型与含义不变。
+
+状态：有意修正。
+
+## D-026 Windows/Intel 详细 GPU 指标不可用（与 Go 一致）
+
+- **Go**：`gpu_detailed_fallback.go`（`!linux`）的 `GetDetailedGPUInfo` /
+  `GetDetailedGPUHost` 返回 `detailed GPU monitoring not supported on this platform`；
+  Intel 在任何平台都没有详细 provider（`vendorType` 只在 NVIDIA/AMD 之间选择，
+  AMD 走 `rocm-smi`）。
+- **Rust**：非 Linux 的 `enable_gpu` 同样返回该错误并省略 `gpu`；Intel 仅参与型号
+  识别。Windows DXGI 能提供专用/共享显存总量，但 v1 协议与 Go 都没有对应字段，
+  因此只在 `agent_monitor::enumerate_gpu_adapters()` 中暴露，不进入上报。
+
+原因：保持与 Go 相同的详细 GPU 能力边界，避免协议层出现 Go 没有的字段。
+
+影响：Windows/Intel 部署的 `gpu` 详细使用率、显存占用与温度仍为空；需要这些指标
+时应使用厂商工具（Windows 任务管理器/厂商 SDK）或 Linux + `nvidia-smi`/`rocm-smi`。
+后续若协议增加显存字段，可基于 DXGI 枚举补齐 Windows。
+
+状态：与 Go 对等；已知限制。

@@ -2,11 +2,15 @@
 //!
 //! Linux follows `gpu_linux.go`: `lspci` first, then `/sys/class/drm` (with
 //! device-tree SoC names). macOS uses `system_profiler`, FreeBSD `pciconf`,
-//! and Windows reports `Unknown` (detailed DXGI enumeration is out of scope
-//! for the compile-only fallback).
+//! and Windows enumerates DXGI adapters like `gpu_windows.go`.
 
 #![cfg_attr(
-    not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")),
+    not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        windows
+    )),
     allow(dead_code)
 )]
 
@@ -48,7 +52,18 @@ pub(crate) fn detect(options: &MonitorOptions) -> String {
             .unwrap_or_else(|| "Unknown".to_owned())
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+    #[cfg(windows)]
+    {
+        let _ = options;
+        super::windows::gpu_name()
+    }
+
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        windows
+    )))]
     {
         let _ = options;
         "Unknown".to_owned()
