@@ -140,15 +140,15 @@ jobs:
           - runner: ubuntu-latest
             target: x86_64-unknown-freebsd
             asset: komari-agent-freebsd-amd64
-            tool: zigbuild
+            tool: cross
           - runner: ubuntu-latest
             target: aarch64-unknown-freebsd
             asset: komari-agent-freebsd-arm64
-            tool: zigbuild
+            tool: cross
           - runner: ubuntu-latest
             target: i686-unknown-freebsd
             asset: komari-agent-freebsd-386
-            tool: zigbuild
+            tool: cross
 
     steps:
       - name: Checkout
@@ -174,6 +174,10 @@ jobs:
           "$HOME/zigbuild-venv/bin/pip" install cargo-zigbuild ziglang
           echo "$HOME/zigbuild-venv/bin" >> "$GITHUB_PATH"
 
+      - name: Install cross
+        if: matrix.tool == 'cross'
+        uses: taiki-e/install-action@cross
+
       - name: Set version
         shell: bash
         run: |
@@ -192,6 +196,8 @@ jobs:
           set -euo pipefail
           if [ "${{ matrix.tool }}" = "zigbuild" ]; then
             cargo zigbuild --release --locked --target "${{ matrix.target }}" -p agent-cli
+          elif [ "${{ matrix.tool }}" = "cross" ]; then
+            cross build --release --locked --target "${{ matrix.target }}" -p agent-cli
           else
             cargo build --release --locked --target "${{ matrix.target }}" -p agent-cli
           fi
