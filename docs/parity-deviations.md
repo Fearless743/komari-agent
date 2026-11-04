@@ -353,20 +353,21 @@ systemd `Restart=on-failure` 不重启，因此改为 1。
 影响：依赖 `message` 中 uptime 诊断的部署会少一行文本，其余上报字段不受影响；
 `HOST_PROC`（strict_proc）下 uptime 读取失败静默归零，不混入宿主机指标。
 
-## D-024 不提供 FreeBSD/arm 构建产物
+## D-024 不提供 FreeBSD/arm 与 FreeBSD/arm64 构建产物
 
 - **Go**：`build_all` 与 release 矩阵包含 `freebsd/arm`，产物为
   `komari-agent-freebsd-arm`。
-- **Rust**：构建矩阵不包含 `freebsd/arm`。`armv7-unknown-freebsd` 是 tier 3
-  target，rustup 不提供预编译 std，`cargo build --target armv7-unknown-freebsd`
-  在标准工具链上无法直接完成。
+- **Rust**：构建矩阵不包含 `freebsd/arm` 与 `freebsd/arm64`。`armv7-unknown-freebsd`
+  是 tier 3 target，rustup 不提供预编译 std；`aarch64-unknown-freebsd` 虽为 tier 2，
+  但 cross-rs 的 aarch64 FreeBSD 镜像调用 x86 汇编器（`aws-lc-sys` 汇编失败），
+  zigbuild 与 FreeBSD base 库的 sysroot 混用也无法稳定链接。
 
 原因：不为单个 tier 3 目标引入 nightly `-Z build-std` 或自建 sysroot，避免发布
 流程依赖不稳定的工具链。
 
-影响：FreeBSD/arm 用户目前需要使用 Go 版，或在 FreeBSD/arm 主机上用
-`-Z build-std` 自行构建。`install.sh` 在 FreeBSD/arm 上会明确报错，不会下载
-不存在的资产；其余 FreeBSD 目标（amd64/arm64/386）不受影响。
+影响：FreeBSD/arm 与 FreeBSD/arm64 用户需要在目标主机上自行构建。
+`install.sh` 在 FreeBSD/arm 与 FreeBSD/arm64 上会明确报错，不会下载不存在的资产；
+FreeBSD amd64/386 仍发布。
 
 A09 评估（nightly `-Z build-std`）：
 

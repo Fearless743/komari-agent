@@ -205,10 +205,11 @@ detect_arch() {
             ;;
     esac
 
-    # armv7-unknown-freebsd is a tier 3 Rust target and rustup ships no std
-    # for it, so the release matrix does not publish a FreeBSD/arm binary.
-    if [ "$OS_NAME" = "freebsd" ] && [ "$ARCH" = "arm" ]; then
-        die "FreeBSD/arm binaries are not published (armv7-unknown-freebsd is a tier 3 target; see D-024)."
+    # FreeBSD/arm is a tier 3 Rust target; FreeBSD/arm64 is a tier 2 target
+    # but the available cross toolchains cannot assemble aws-lc-sys for it.
+    # Neither binary is published (see D-024).
+    if [ "$OS_NAME" = "freebsd" ] && { [ "$ARCH" = "arm" ] || [ "$ARCH" = "arm64" ]; }; then
+        die "FreeBSD/$ARCH binaries are not published (see D-024); build from source on the target host."
     fi
 }
 

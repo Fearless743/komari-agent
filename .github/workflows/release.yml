@@ -147,10 +147,6 @@ jobs:
             asset: komari-agent-freebsd-amd64
             tool: cross
           - runner: ubuntu-latest
-            target: aarch64-unknown-freebsd
-            asset: komari-agent-freebsd-arm64
-            tool: zigbuild
-          - runner: ubuntu-latest
             target: i686-unknown-freebsd
             asset: komari-agent-freebsd-386
             tool: cross
@@ -182,15 +178,6 @@ jobs:
       - name: Install cross
         if: matrix.tool == 'cross'
         uses: taiki-e/install-action@cross
-
-      - name: Prepare FreeBSD base libraries
-        if: matrix.target == 'aarch64-unknown-freebsd'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo mkdir -p /freebsd
-          curl -fsSL https://archive.freebsd.org/old-releases/arm64/aarch64/12.4-RELEASE/base.txz \
-            | sudo tar -xJf - -C /freebsd ./usr/lib ./lib
 
       - name: Set version
         shell: bash

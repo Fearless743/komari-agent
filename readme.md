@@ -422,13 +422,15 @@ komari-agent-linux-arm64     komari-agent-windows-arm64.exe
 komari-agent-linux-386       komari-agent-windows-386.exe
 komari-agent-linux-arm       komari-agent-darwin-amd64
 komari-agent-darwin-arm64    komari-agent-freebsd-amd64
-komari-agent-freebsd-arm64   komari-agent-freebsd-386
+komari-agent-freebsd-386
 ```
 
-FreeBSD/arm 不发布：`armv7-unknown-freebsd` 是 tier 3 target，rustup 不提供
-预编译 std。该差异登记为 D-024；安装脚本在 FreeBSD/arm 上会给出明确错误。
-nightly + `rust-src` + `-Z build-std` 可以交叉检查 `agent-monitor`，但完整 CLI 仍需
-FreeBSD/armv7 的 C 交叉工具链（`aws-lc-sys`），因此发布矩阵保持不含该目标。
+FreeBSD/arm 与 FreeBSD/arm64 不发布：`armv7-unknown-freebsd` 是 tier 3 target，
+rustup 不提供预编译 std；`aarch64-unknown-freebsd` 虽为 tier 2，但 cross-rs 镜像
+调用了错误的汇编器，zigbuild 与 FreeBSD base 库混用也无法稳定链接。该差异登记为
+D-024；安装脚本在 FreeBSD/arm 与 FreeBSD/arm64 上会给出明确错误。nightly +
+`rust-src` + `-Z build-std` 可以交叉检查 `agent-monitor`，但完整 CLI 仍需对应
+FreeBSD 架构的 C 工具链（`aws-lc-sys`）。
 
 | 变量 | 作用 |
 | --- | --- |

@@ -18,8 +18,3 @@ pre-build = [
   "mkdir -p /freebsd && curl -fsSL https://archive.freebsd.org/old-releases/i386/i386/12.4-RELEASE/base.txz | tar -xJf - -C /freebsd ./usr/lib ./lib",
 ]
 
-[target.aarch64-unknown-freebsd]
-pre-build = [
-  "apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates",
-  "mkdir -p /freebsd && curl -fsSL https://archive.freebsd.org/old-releases/arm64/aarch64/12.4-RELEASE/base.txz | tar -xJf - -C /freebsd ./usr/lib ./lib",
-]
