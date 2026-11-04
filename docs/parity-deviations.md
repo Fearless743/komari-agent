@@ -267,7 +267,9 @@ systemd `Restart=on-failure` 不重启，因此改为 1。
 
 状态：已收敛。`agent-client::supplement` 已删除，不再有第二套指标采集实现。
 
-## D-020 外部 IP 查询已对齐（NIC > custom > 外部服务）
+## D-020 外部 IP 查询基本对齐（NIC > custom > 外部服务）
+
+状态：**基本对齐**，剩余差异见本节末尾。
 
 - **Go**：`GetIPAddress` 的优先级是：启用 `get_ip_addr_from_nic` 且取到地址时直接返回；
   否则使用 `custom_ipv4`/`custom_ipv6`；对应地址族仍为空时请求 visa.cn、ipify 等外部服务。
@@ -275,19 +277,32 @@ systemd `Restart=on-failure` 不重启，因此改为 1。
   - Unix：用 `getifaddrs` + `IFF_UP`（不含 `IFF_RUNNING`）判断接口可用，排除回环接口、
     回环地址和 IPv6 链路本地地址，与 Go `net.FlagUp` 语义一致；
   - 非 Unix：`if-addrs::is_oper_up()` 只是近似（另见 D-011）。
-- 外部查询细节与 Go 对齐：
+- 与 Go 对齐的部分：
   - IPv4 顺序：visa.cn、qualcomm.cn、toutiao、edge-ip、vercel-ip、ipv4.ip.sb、ipify；
   - IPv6 顺序：v6.ip.zxinc.org、api6.ipify.org、ipv6.icanhazip.com、api-ipv6.ip.sb；
   - `User-Agent: curl/8.0.1`，单次请求 15 秒超时；
   - IPv4/IPv6 客户端分别锁定 `tcp4`/`tcp6`：自定义 DNS 结果按地址族过滤，并用本地
     地址族绑定兜底 IP 字面量；
-  - 读取 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`（大小写均可）；
-  - 使用 Go 相同的 IPv4/IPv6 正则提取，传输错误、超时或无匹配时继续下一个；
-  - 全部失败返回空字符串，不向调用方报错。
+  - 代理变量与 Go 的 `http.ProxyFromEnvironment` 一致：只读
+    `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`（大小写均可），不读 `ALL_PROXY`；
+    支持 `socks5://`，并按 Go 语义交由代理解析目标域名（reqwest 侧使用 `socks5h`）；
+  - IPv4 正则使用 ASCII `[0-9]{1,3}`，等价于 Go RE2 的 `\d`（Go 的 `\d` 不匹配全角数字）；
+    IPv6 正则表达式与 Go 逐字符一致；
+  - 传输错误、超时或无匹配时继续下一个，全部失败返回空字符串；
   - 与 Go 一样不检查 HTTP 状态码，非 2xx 的响应体仍会参与正则提取。
 - 实现方式：基础信息在 `spawn_blocking` 中采集，因此外部查询使用阻塞式 `reqwest`；
-  DNS 走运行时的 `DnsResolver`（含 `custom_dns`），日志只记录端点与错误，不记录 token
-  或响应体。
+  DNS 走运行时的 `DnsResolver`（含 `custom_dns`），日志只记录端点与错误，不记录 token、
+  响应体或代理凭据。
+
+已登记差异：
+
+- 代理环境变量在创建 lookup 时读取一次；Go 的 `ProxyFromEnvironment` 每次请求都会读取。
+- reqwest 额外接受 `socks5h://`（代理解析）与 `socks4`/`socks4a` 形式的 URL；Go 仅保证
+  `socks5://`。Rust 将 `socks5://` 规范化为 `socks5h://` 以匹配 Go 的远端解析行为。
+- `NO_PROXY` 的匹配细节由 reqwest/hyper-util 提供，未逐条复刻 Go `httpproxy` 的全部边界
+  （常见域名、IP、端口与通配场景已覆盖）。
+- 外部查询使用阻塞式 `reqwest`（在 `spawn_blocking` 内），不是 Go 的 `net/http` transport；
+  IPv6 不可用等网络环境差异可能导致相同请求在不同平台表现不同。
 
 影响：未启用 NIC 且未设置 custom 的部署会像 Go 一样访问公网 IP 服务；容器/内网部署仍可
 通过 `get_ip_addr_from_nic` 或 `custom_ipv4`/`custom_ipv6` 完全避免外部请求。
