@@ -129,11 +129,11 @@ jobs:
             target: i686-pc-windows-msvc
             asset: komari-agent-windows-386.exe
             tool: cargo
-          - runner: macos-latest
+          - runner: macos-15-intel
             target: x86_64-apple-darwin
             asset: komari-agent-darwin-amd64
             tool: cargo
-          - runner: macos-latest
+          - runner: macos-15
             target: aarch64-apple-darwin
             asset: komari-agent-darwin-arm64
             tool: cargo
