@@ -29,7 +29,10 @@ pub use clock::{Clock, TokioClock};
 pub use endpoint::{
     BASIC_INFO_PATH, EndpointError, REPORT_PATH, build_basic_info_endpoint, build_ws_endpoint,
 };
-pub use ip::{IpOptions, addresses as ip_addresses};
+pub use ip::{
+    ExternalIpConfig, ExternalIpLookup, IpFamily, IpOptions, ProxySettings,
+    addresses as ip_addresses, addresses_with as ip_addresses_with,
+};
 pub use provider::{MonitorReportProvider, ReportProvider};
 pub use report::{ReportSample, build_report};
 pub use ws::{

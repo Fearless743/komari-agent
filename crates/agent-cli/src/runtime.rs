@@ -287,6 +287,7 @@ pub fn ip_options(config: &Config) -> IpOptions {
         custom_ipv4: config.custom_ipv4.clone(),
         custom_ipv6: config.custom_ipv6.clone(),
         get_ip_addr_from_nic: config.get_ip_addr_from_nic,
+        ..IpOptions::default()
     }
 }
 
