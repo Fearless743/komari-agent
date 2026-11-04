@@ -1,0 +1,33 @@
+# Cross-compilation settings for FreeBSD targets.
+#
+# The cross-rs FreeBSD images ship a compiler and libc, but not the FreeBSD
+# base libraries that the Rust target spec links by default (`libgeom`,
+# `libkvm`, `libmemstat`, `libprocstat`, `libdevstat`). Extract them from the
+# matching 12.4-RELEASE base set and add them to the linker search path.
+
+[target.x86_64-unknown-freebsd]
+pre-build = [
+  "apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates",
+  "mkdir -p /freebsd && curl -fsSL https://archive.freebsd.org/old-releases/amd64/amd64/12.4-RELEASE/base.txz | tar -xJf - -C /freebsd ./usr/lib ./lib",
+]
+
+[target.x86_64-unknown-freebsd.env]
+RUSTFLAGS = "-L native=/freebsd/usr/lib -L native=/freebsd/lib"
+
+[target.i686-unknown-freebsd]
+pre-build = [
+  "apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates",
+  "mkdir -p /freebsd && curl -fsSL https://archive.freebsd.org/old-releases/i386/i386/12.4-RELEASE/base.txz | tar -xJf - -C /freebsd ./usr/lib ./lib",
+]
+
+[target.i686-unknown-freebsd.env]
+RUSTFLAGS = "-L native=/freebsd/usr/lib -L native=/freebsd/lib"
+
+[target.aarch64-unknown-freebsd]
+pre-build = [
+  "apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates",
+  "mkdir -p /freebsd && curl -fsSL https://archive.freebsd.org/old-releases/arm64/aarch64/12.4-RELEASE/base.txz | tar -xJf - -C /freebsd ./usr/lib ./lib",
+]
+
+[target.aarch64-unknown-freebsd.env]
+RUSTFLAGS = "-L native=/freebsd/usr/lib -L native=/freebsd/lib"
