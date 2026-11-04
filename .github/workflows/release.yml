@@ -262,3 +262,21 @@ jobs:
           build-args: |
             KOMARI_AGENT_VERSION=${{ github.event.release.tag_name }}
             KOMARI_AGENT_VERSION_HASH=${{ github.sha }}
+
+  installers:
+    name: Upload installer scripts
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Upload install.sh and install.ps1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ github.event.release.tag_name }}" install.sh install.ps1 \
+            --clobber --repo "${{ github.repository }}"
