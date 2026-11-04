@@ -6,6 +6,8 @@
 #
 # FreeBSD's `libc.so`/`libm.so` are linker scripts containing absolute paths
 # such as `/lib/libc.so.7`; `--sysroot` rewrites them under /freebsd.
+# `-rpath-link` resolves the transitive shared-library dependencies of
+# libgeom/libkvm (libbsdxml, libsbuf, libelf).
 # These flags are ignored on hosts where /freebsd does not exist.
 
 [target.x86_64-unknown-freebsd]
@@ -13,6 +15,8 @@ rustflags = [
   "-L", "native=/freebsd/usr/lib",
   "-L", "native=/freebsd/lib",
   "-C", "link-arg=-Wl,--sysroot=/freebsd",
+  "-C", "link-arg=-Wl,-rpath-link=/freebsd/lib",
+  "-C", "link-arg=-Wl,-rpath-link=/freebsd/usr/lib",
 ]
 
 [target.i686-unknown-freebsd]
@@ -20,6 +24,8 @@ rustflags = [
   "-L", "native=/freebsd/usr/lib",
   "-L", "native=/freebsd/lib",
   "-C", "link-arg=-Wl,--sysroot=/freebsd",
+  "-C", "link-arg=-Wl,-rpath-link=/freebsd/lib",
+  "-C", "link-arg=-Wl,-rpath-link=/freebsd/usr/lib",
 ]
 
 [target.aarch64-unknown-freebsd]
@@ -27,4 +33,6 @@ rustflags = [
   "-L", "native=/freebsd/usr/lib",
   "-L", "native=/freebsd/lib",
   "-C", "link-arg=-Wl,--sysroot=/freebsd",
+  "-C", "link-arg=-Wl,-rpath-link=/freebsd/lib",
+  "-C", "link-arg=-Wl,-rpath-link=/freebsd/usr/lib",
 ]
