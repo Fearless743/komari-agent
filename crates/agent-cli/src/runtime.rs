@@ -88,12 +88,15 @@ impl RuntimeDeps {
         let ws: Arc<dyn WsTransport> = Arc::new(TungsteniteTransport::new(ws_config));
 
         let monitor = monitor_options(config);
-        let provider: Arc<dyn ReportProvider> = Arc::new(MonitorReportProvider::new(
-            Arc::new(Collector::new(monitor)),
-            ip_options(config),
-            Duration::from_secs(1),
-            VERSION,
-        ));
+        let provider: Arc<dyn ReportProvider> = Arc::new(
+            MonitorReportProvider::new(
+                Arc::new(Collector::new(monitor)),
+                ip_options(config),
+                Duration::from_secs(1),
+                VERSION,
+            )
+            .with_ip_resolver(resolver.clone()),
+        );
 
         let updater = if config.disable_auto_update {
             None
@@ -287,6 +290,7 @@ pub fn ip_options(config: &Config) -> IpOptions {
         custom_ipv4: config.custom_ipv4.clone(),
         custom_ipv6: config.custom_ipv6.clone(),
         get_ip_addr_from_nic: config.get_ip_addr_from_nic,
+        ..IpOptions::default()
     }
 }
 
