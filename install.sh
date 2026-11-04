@@ -1618,6 +1618,8 @@ main() {
 }
 
 # Allow tests to source the helpers without running the installer.
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+# ${BASH_SOURCE[0]:-} is empty when the script is piped via stdin
+# (`curl ... | bash -s -- ...`); the :- default keeps this safe under set -u.
+if [ -z "${BASH_SOURCE[0]:-}" ] || [ "${BASH_SOURCE[0]:-}" = "$0" ]; then
     main "$@"
 fi
