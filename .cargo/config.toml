@@ -29,10 +29,12 @@ rustflags = [
 ]
 
 [target.aarch64-unknown-freebsd]
+# Built with cargo-zigbuild, whose linker wrapper rejects `-Wl,--sysroot`
+# but accepts the driver-level `--sysroot`.
 rustflags = [
   "-L", "native=/freebsd/usr/lib",
   "-L", "native=/freebsd/lib",
-  "-C", "link-arg=-Wl,--sysroot=/freebsd",
+  "-C", "link-arg=--sysroot=/freebsd",
   "-C", "link-arg=-Wl,-rpath-link=/freebsd/lib",
   "-C", "link-arg=-Wl,-rpath-link=/freebsd/usr/lib",
 ]
