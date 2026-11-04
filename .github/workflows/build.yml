@@ -133,7 +133,7 @@ jobs:
             target: x86_64-apple-darwin
             asset: komari-agent-darwin-amd64
             tool: cargo
-          - runner: macos-15
+          - runner: macos-15-intel
             target: aarch64-apple-darwin
             asset: komari-agent-darwin-arm64
             tool: cargo
