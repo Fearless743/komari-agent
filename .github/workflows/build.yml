@@ -39,7 +39,7 @@ jobs:
 
       - name: Lint workflows
         run: |
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           "$(go env GOPATH)/bin/actionlint" .github/workflows/*.yml
 
       - name: Parse PowerShell installers
